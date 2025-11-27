@@ -4,8 +4,16 @@ import sys
 import os
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from common.protocol import send_json, recv_json, CMD_JOIN, EVT_WELCOME, CMD_START_GAME, EVT_GAME_STARTED, EVT_NEW_SEGMENT, CMD_SUBMIT
-
+from common.protocol import (
+    send_json, recv_json, 
+    CMD_JOIN, EVT_WELCOME, 
+    CMD_START_GAME, EVT_GAME_STARTED, 
+    EVT_NEW_SEGMENT, CMD_SUBMIT, 
+    CMD_HEARTBEAT,
+    CMD_SELECT_PROPOSAL,
+    EVT_NARRATOR_DECISION_NEEDED,
+    EVT_STORY_UPDATE 
+)
 HOST = '127.0.0.1'
 PORT = 65432
 
@@ -13,6 +21,7 @@ PORT = 65432
 STATE_VIEWING = "VIEWING"  # Legge la storia / attende start
 STATE_EDITING = "EDITING"  # Può scrivere la proposta
 STATE_WAITING = "WAITING"  # Ha inviato, aspetta il narratore
+STATE_DECIDING = "DECIDING"
 
 class ClientState:
     def __init__(self):
@@ -53,6 +62,30 @@ def listen_from_server(sock):
                 else:
                     state.phase = STATE_EDITING
                     print(">>> TOCCA A TE! Scrivi la tua continuazione e premi Invio: <<<")
+            
+            elif msg_type == EVT_NARRATOR_DECISION_NEEDED:
+                if state.am_i_narrator:
+                    state.phase = STATE_DECIDING
+                    proposals = msg.get('proposals')
+                    
+                    print("\n" + "*"*40)
+                    print("TUTTE LE PROPOSTE SONO ARRIVATE! SCEGLI LA MIGLIORE:")
+                    for p in proposals:
+                        print(f"[{p['id']}] {p['author']}: {p['text']}")
+                    print("*"*40)
+                    print(">>> Scrivi il NUMERO della proposta vincente e premi Invio: <<<")
+
+            elif msg_type == EVT_STORY_UPDATE:
+                story_lines = msg.get('story')
+                print("\n" + "="*40)
+                print("STORIA AGGIORNATA:")
+                for line in story_lines:
+                    print(f" > {line}")
+                print("="*40 + "\n")
+
+
+            # Se volessimo ricominciare subito un nuovo round, qui resetteremmo lo stato
+                # Ma aspettiamo il server per il EVT_NEW_SEGMENT
 
             # --- ALTRI MESSAGGI ---
             elif msg_type == EVT_WELCOME:
@@ -81,7 +114,7 @@ def start_client():
 
     while True:
         try:
-            user_input = input() # Input bloccante
+            user_input = input()
             if not user_input: continue
 
             # Gestione comandi di sistema
@@ -116,6 +149,24 @@ def start_client():
                         print("[INFO] Sei il narratore, non puoi proporre frasi.")
                     else:
                         print("[INFO] Non è ancora il momento di scrivere.")
+            
+            # --- GESTIONE DECISIONE NARRATORE ---
+            if state.phase == STATE_DECIDING and state.am_i_narrator:
+                try:
+                    # L'utente scrive il numero (es. "0")
+                    choice_id = int(user_input)
+                    
+                    select_msg = {
+                        "type": CMD_SELECT_PROPOSAL,
+                        "proposal_id": choice_id
+                    }
+                    send_json(sock, select_msg)
+                    print("[INFO] Scelta inviata. Aggiornamento storia in corso...")
+                    state.phase = STATE_VIEWING # Torna in attesa
+                    
+                except ValueError:
+                    print("[ERRORE] Inserisci un numero valido corrispondente alla proposta.")
+                continue
 
         except EOFError: break
     

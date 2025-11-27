@@ -64,3 +64,17 @@ class GameState:
         }
         self.active_proposals.append(proposal)
         return True, proposal
+
+    def select_proposal(self, proposal_id):
+        # Cerca la proposta con quell'ID
+        selected = next((p for p in self.active_proposals if p['id'] == proposal_id), None)
+        
+        if selected:
+            # Aggiungi il testo alla storia ufficiale
+            full_segment_text = f"{selected['author']}: {selected['text']}"
+            self.story.append(full_segment_text)
+            
+            # Pulisci per il prossimo round
+            self.active_proposals = []
+            return True, self.story
+        return False, None

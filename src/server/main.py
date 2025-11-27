@@ -9,7 +9,10 @@ from common.protocol import (
     CMD_JOIN, EVT_WELCOME, 
     CMD_START_GAME, EVT_GAME_STARTED, 
     EVT_NEW_SEGMENT, CMD_SUBMIT, 
-    CMD_HEARTBEAT
+    CMD_HEARTBEAT,
+    CMD_SELECT_PROPOSAL,
+    EVT_NARRATOR_DECISION_NEEDED,
+    EVT_STORY_UPDATE
 )
 from gamestate import GameState
 
@@ -103,31 +106,61 @@ def handle_client(conn, addr):
 
             # --- GESTIONE PROPOSTE SCRITTORI ---
             elif msg_type == CMD_SUBMIT:
-                # 1. Recupera il testo
                 text = msg.get('text')
-                
-                # 2. Salva nel GameState
                 success, result = game_state.add_proposal(user_id, text)
                 
                 if success:
-                    print(f"[PROPOSTA] Utente {addr} ha scritto: {text[:1000]}...")
+                    print(f"[PROPOSTA] {addr} ha scritto.")
                     
-                    # 3. NOTIFICA AL NARRATORE
-                    narrator_id = game_state.narrator
-                    
-                    with lock:
-                        narrator_sock = active_connections.get(narrator_id)
-                        if narrator_sock:
-                            # Creiamo un evento per il narratore
-                            update_msg = {
-                                "type": "PROPOSAL_UPDATE",
-                                "proposals": game_state.active_proposals
-                            }
-                            send_json(narrator_sock, update_msg)
-                            
+                    # 1. CONTROLLO: Tutti gli scrittori hanno inviato?
+                    # Numero scrittori = Totale giocatori - 1 (il Narratore)
+                    total_writers = len(game_state.players) - 1
+                    current_proposals = len(game_state.active_proposals)
+
+                    print(f"[DEBUG] Proposte: {current_proposals}/{total_writers}")
+
+                    if current_proposals >= total_writers:
+                        print("[INFO] Tutte le proposte ricevute! Invio al Narratore.")
+                        
+                        # 2. Prepara il pacchetto per il Narratore
+                        decision_msg = {
+                            "type": EVT_NARRATOR_DECISION_NEEDED,
+                            "proposals": game_state.active_proposals
+                        }
+                        
+                        # 3. Invia SOLO al Narratore
+                        narrator_id = game_state.narrator
+                        with lock:
+                            if narrator_id in active_connections:
+                                send_json(active_connections[narrator_id], decision_msg)
                 else:
                     send_json(conn, {"type": "ERROR", "msg": result})
 
+                # --- GESTIONE SCELTA NARRATORE ---
+            elif msg_type == CMD_SELECT_PROPOSAL:
+                # Solo il narratore può fare questo
+                if user_id != game_state.narrator:
+                    continue
+
+                proposal_id = int(msg.get('proposal_id'))
+                
+                # Applica la scelta nel GameState
+                success, new_story = game_state.select_proposal(proposal_id)
+                
+                if success:
+                    # BROADCAST: Aggiorna la storia per tutti
+                    update_msg = {
+                        "type": EVT_STORY_UPDATE,
+                        "story": new_story
+                    }
+                    with lock:
+                        for sock in active_connections.values():
+                            send_json(sock, update_msg)
+                            
+                    # Qui potresti far ripartire subito un nuovo segmento
+                    # game_state.start_new_segment() ... (come fatto prima)
+                else:
+                    send_json(conn, {"type": "ERROR", "msg": "ID Proposta non valido"})
             # --- GESTIONE HEARTBEAT ---
             elif msg_type == CMD_HEARTBEAT:
                 pass
