@@ -3,50 +3,106 @@ import threading
 import sys
 import os
 
-# Aggiungi src al path per importare i moduli common
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from common.protocol import send_json, recv_json, CMD_JOIN, EVT_WELCOME
+from common.protocol import send_json, recv_json, CMD_JOIN, EVT_WELCOME, CMD_START_GAME, EVT_GAME_STARTED, CMD_HEARTBEAT
 from gamestate import GameState
 
-HOST = '127.0.0.1' # Localhost per test
+HOST = '127.0.0.1'
 PORT = 65432
 
 game_state = GameState()
+active_connections = {} # Map[addr_tuple -> socket_connection]
+lock = threading.Lock()
+
+def broadcast(msg):
+    """Invia un messaggio a TUTTI i client connessi."""
+    with lock:
+        for addr, sock in active_connections.items():
+            try:
+                send_json(sock, msg)
+            except Exception as e:
+                print(f"Errore invio a {addr}: {e}")
 
 def handle_client(conn, addr):
-    """Gestisce la comunicazione con un singolo client."""
     print(f"Nuova connessione da {addr}")
-    user_id = None
+    
+    with lock:
+        active_connections[addr] = conn
+
+    user_id = addr
     
     try:
         while True:
             msg = recv_json(conn)
-            if not msg:
-                break
+            if not msg: break
             
             msg_type = msg.get('type')
             
+            # --- GESTIONE JOIN ---
             if msg_type == CMD_JOIN:
                 username = msg.get('username', 'Anonimo')
-                user_id = addr
                 game_state.add_player(user_id, username)
                 
-                # Invia conferma al client
-                response = {"type": EVT_WELCOME, "msg": f"Benvenuto {username}!"}
+                # Risposta solo a chi è entrato
+                is_leader = (game_state.leader == user_id)
+                response = {
+                    "type": EVT_WELCOME, 
+                    "msg": f"Benvenuto {username}!",
+                    "is_leader": is_leader
+                }
                 send_json(conn, response)
+
+            # --- GESTIONE START GAME (Solo Leader) ---
+            elif msg_type == CMD_START_GAME:
+                # 1. Verifica permessi
+                if game_state.leader != user_id:
+                    send_json(conn, {"type": "ERROR", "msg": "Solo il leader può iniziare la partita."})
+                    continue
+
+                # 2. Avvia logica di gioco
+                success, info = game_state.start_new_story()
                 
-            # Qui aggiungeremo gli altri case: SUBMIT, HEARTBEAT, etc.
-            
+                if success:
+                    # 3. BROADCAST: Notifica a TUTTI
+                    # info contiene: narrator_id, narrator_name, theme
+                    evt = {
+                        "type": EVT_GAME_STARTED,
+                        "narrator": info['narrator_name'],
+                        "theme": info['theme'],
+                        "is_narrator": False
+                    }
+                    
+                    # Inviamo messaggi personalizzati o generici
+                    # Per semplicità qui facciamo broadcast generico, ma il client
+                    # dovrà capire se è lui il narratore controllando il nome o ID.
+                    
+                    with lock:
+                        for p_addr, p_sock in active_connections.items():
+                            evt_personal = evt.copy()
+                            evt_personal["am_i_narrator"] = (p_addr == info['narrator_id'])
+                            send_json(p_sock, evt_personal)
+                    
+                    print(f"Partita iniziata. Narratore: {info['narrator_name']}")
+
+                else:
+                    send_json(conn, {"type": "ERROR", "msg": info})
+
+            # --- GESTIONE HEARTBEAT ---
+            elif msg_type == CMD_HEARTBEAT:
+                pass
+
     except ConnectionResetError:
         print(f"Connessione persa con {addr}")
     finally:
-        if user_id:
-            game_state.remove_player(user_id)
+        with lock:
+            if addr in active_connections:
+                del active_connections[addr]
+        game_state.remove_player(user_id)
         conn.close()
 
 def start_server():
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((HOST, PORT))
     server.listen()
     print(f"[SERVER] In ascolto su {HOST}:{PORT}")
@@ -55,7 +111,6 @@ def start_server():
         conn, addr = server.accept()
         thread = threading.Thread(target=handle_client, args=(conn, addr))
         thread.start()
-        print(f"[ATTIVI] Connessioni attive: {threading.active_count() - 1}")
 
 if __name__ == "__main__":
     start_server()

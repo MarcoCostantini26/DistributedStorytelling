@@ -1,15 +1,19 @@
 import json
 import struct
 
-# Costanti per i comandi (Client -> Server) [cite: 243]
+# Costanti per i comandi (Client -> Server)
+CMD_START_GAME = "START_GAME"
+
 CMD_JOIN = "JOIN_STORY"
 CMD_SUBMIT = "SUBMIT_PROPOSAL"
 CMD_HEARTBEAT = "HEARTBEAT"
 CMD_DISCONNECT = "DISCONNECT"
-CMD_SELECT_PROPOSAL = "SELECT_PROPOSAL" # Comando del narratore
+CMD_SELECT_PROPOSAL = "SELECT_PROPOSAL"
 
-# Costanti per gli eventi (Server -> Client) [cite: 249]
-EVT_WELCOME = "WELCOME" # Risposta al Join
+# Costanti per gli eventi (Server -> Client)
+EVT_GAME_STARTED = "GAME_STARTED"
+
+EVT_WELCOME = "WELCOME"
 EVT_NEW_ROUND = "START_STORY"
 EVT_NEW_SEGMENT = "START_SEGMENT"
 EVT_UPDATE_PROPOSALS = "PROPOSALS_RECEIVED"
@@ -30,7 +34,6 @@ def recv_json(sock):
     Riceve un messaggio JSON leggendo prima la lunghezza.
     """
     try:
-        # Leggi i primi 4 byte per la lunghezza
         raw_msglen = recvall(sock, 4)
         if not raw_msglen:
             return None
