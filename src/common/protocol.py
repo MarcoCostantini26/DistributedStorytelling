@@ -3,7 +3,6 @@ import struct
 
 # Costanti per i comandi (Client -> Server)
 CMD_START_GAME = "START_GAME"
-
 CMD_JOIN = "JOIN_STORY"
 CMD_SUBMIT = "SUBMIT_PROPOSAL"
 CMD_HEARTBEAT = "HEARTBEAT"
@@ -12,12 +11,12 @@ CMD_SELECT_PROPOSAL = "SELECT_PROPOSAL"
 
 # Costanti per gli eventi (Server -> Client)
 EVT_GAME_STARTED = "GAME_STARTED"
-
 EVT_WELCOME = "WELCOME"
 EVT_NEW_ROUND = "START_STORY"
 EVT_NEW_SEGMENT = "START_SEGMENT"
 EVT_UPDATE_PROPOSALS = "PROPOSALS_RECEIVED"
 EVT_NARRATOR_ASSIGNED = "NARRATOR_ASSIGNED"
+EVT_PROPOSAL_ACK = "PROPOSAL_ACK"
 EVT_STORY_UPDATE = "STORY_UPDATE"
 
 def send_json(sock, data):
@@ -39,7 +38,6 @@ def recv_json(sock):
             return None
         msglen = struct.unpack('!I', raw_msglen)[0]
         
-        # Leggi il corpo del messaggio
         raw_msg = recvall(sock, msglen)
         return json.loads(raw_msg.decode('utf-8'))
     except Exception as e:

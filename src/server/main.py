@@ -4,7 +4,13 @@ import sys
 import os
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from common.protocol import send_json, recv_json, CMD_JOIN, EVT_WELCOME, CMD_START_GAME, EVT_GAME_STARTED, CMD_HEARTBEAT
+from common.protocol import (
+    send_json, recv_json, 
+    CMD_JOIN, EVT_WELCOME, 
+    CMD_START_GAME, EVT_GAME_STARTED, 
+    EVT_NEW_SEGMENT, CMD_SUBMIT, 
+    CMD_HEARTBEAT
+)
 from gamestate import GameState
 
 HOST = '127.0.0.1'
@@ -72,10 +78,6 @@ def handle_client(conn, addr):
                         "is_narrator": False
                     }
                     
-                    # Inviamo messaggi personalizzati o generici
-                    # Per semplicità qui facciamo broadcast generico, ma il client
-                    # dovrà capire se è lui il narratore controllando il nome o ID.
-                    
                     with lock:
                         for p_addr, p_sock in active_connections.items():
                             evt_personal = evt.copy()
@@ -84,8 +86,47 @@ def handle_client(conn, addr):
                     
                     print(f"Partita iniziata. Narratore: {info['narrator_name']}")
 
+                    seg_id = game_state.start_new_segment()
+                    segment_msg = {
+                        "type": EVT_NEW_SEGMENT,
+                        "segment_id": seg_id
+                    }
+
+                    with lock:
+                        for sock in active_connections.values():
+                            send_json(sock, segment_msg)
+                            
+                    print(f"Avviato segmento {seg_id}")
+
                 else:
                     send_json(conn, {"type": "ERROR", "msg": info})
+
+            # --- GESTIONE PROPOSTE SCRITTORI ---
+            elif msg_type == CMD_SUBMIT:
+                # 1. Recupera il testo
+                text = msg.get('text')
+                
+                # 2. Salva nel GameState
+                success, result = game_state.add_proposal(user_id, text)
+                
+                if success:
+                    print(f"[PROPOSTA] Utente {addr} ha scritto: {text[:1000]}...")
+                    
+                    # 3. NOTIFICA AL NARRATORE
+                    narrator_id = game_state.narrator
+                    
+                    with lock:
+                        narrator_sock = active_connections.get(narrator_id)
+                        if narrator_sock:
+                            # Creiamo un evento per il narratore
+                            update_msg = {
+                                "type": "PROPOSAL_UPDATE",
+                                "proposals": game_state.active_proposals
+                            }
+                            send_json(narrator_sock, update_msg)
+                            
+                else:
+                    send_json(conn, {"type": "ERROR", "msg": result})
 
             # --- GESTIONE HEARTBEAT ---
             elif msg_type == CMD_HEARTBEAT:

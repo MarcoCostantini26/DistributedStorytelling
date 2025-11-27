@@ -4,124 +4,122 @@ import sys
 import os
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from common.protocol import send_json, recv_json, CMD_JOIN, EVT_WELCOME, CMD_START_GAME, EVT_GAME_STARTED
+from common.protocol import send_json, recv_json, CMD_JOIN, EVT_WELCOME, CMD_START_GAME, EVT_GAME_STARTED, EVT_NEW_SEGMENT, CMD_SUBMIT
 
 HOST = '127.0.0.1'
 PORT = 65432
+
+# Definizione stati locali del Client 
+STATE_VIEWING = "VIEWING"  # Legge la storia / attende start
+STATE_EDITING = "EDITING"  # Può scrivere la proposta
+STATE_WAITING = "WAITING"  # Ha inviato, aspetta il narratore
 
 class ClientState:
     def __init__(self):
         self.is_leader = False
         self.am_i_narrator = False
         self.game_running = False
+        self.phase = STATE_VIEWING # Stato iniziale
 
 state = ClientState()
 
 def listen_from_server(sock):
-    """Thread che ascolta costantemente messaggi dal server"""
     while True:
         try:
             msg = recv_json(sock)
-            if not msg:
-                break
+            if not msg: break
             
             msg_type = msg.get('type')
 
-            if msg_type == EVT_WELCOME:
-                print(f"\n[SERVER]: {msg.get('msg')}")
-                
-                # Controlliamo se siamo il leader
-                if msg.get('is_leader'):
-                    state.is_leader = True
-                    print(">>> SEI IL LEADER! Digita '/start' quando vuoi iniziare la partita. <<<")
-                else:
-                    print(">>> In attesa che il leader inizi la partita... <<<")
-
-            elif msg_type == EVT_GAME_STARTED:
+            # --- GESTIONE START GAME ---
+            if msg_type == EVT_GAME_STARTED:
                 state.game_running = True
-                narrator_name = msg.get('narrator')
-                theme = msg.get('theme')
                 state.am_i_narrator = msg.get('am_i_narrator', False)
+                state.phase = STATE_VIEWING
+                
+                print(f"\n[INFO] Nuova storia iniziata! Tema: {msg.get('theme')}")
+                if state.am_i_narrator:
+                    print("[RUOLO] Sei il NARRATORE. Attendi le proposte.")
+                else:
+                    print("[RUOLO] Sei uno SCRITTORE. Preparati a scrivere.")
 
-                print("\n" + "="*40)
-                print(f"LA PARTITA È INIZIATA!")
-                print(f"TEMA: {theme}")
-                print(f"NARRATORE: {narrator_name}")
+            # --- GESTIONE NUOVO SEGMENTO (Transizione a EDITING) ---
+            elif msg_type == EVT_NEW_SEGMENT:
+                print(f"\n--- INIZIO SEGMENTO {msg.get('segment_id')} ---")
                 
                 if state.am_i_narrator:
-                    print("\n[RUOLO]: SEI IL NARRATORE!")
-                    print("Attendi le proposte degli altri giocatori...")
+                    state.phase = STATE_VIEWING
+                    print("In attesa delle proposte degli scrittori...")
                 else:
-                    print("\n[RUOLO]: SEI UNO SCRITTORE!")
-                    print("Presto potrai inviare la tua proposta per la storia.")
-                print("="*40 + "\n")
+                    state.phase = STATE_EDITING
+                    print(">>> TOCCA A TE! Scrivi la tua continuazione e premi Invio: <<<")
+
+            # --- ALTRI MESSAGGI ---
+            elif msg_type == EVT_WELCOME:
+                state.is_leader = msg.get('is_leader')
+                print(f"[SERVER] {msg.get('msg')}")
+                if state.is_leader: print("Digita '/start' per iniziare.")
 
             elif msg_type == "ERROR":
-                print(f"\n[ERRORE]: {msg.get('msg')}")
-
-            else:
-                print(f"\n[SERVER MSG]: {msg}")
+                print(f"[ERRORE] {msg.get('msg')}")
 
         except Exception as e:
-            print(f"\nErrore nella ricezione: {e}")
+            print(f"Errore: {e}")
             break
-    
-    print("\nDisconnesso dal server.")
     os._exit(0)
 
 def start_client():
     print("--- DISTRIBUTED STORYTELLING CLIENT ---")
-    username = input("Inserisci il tuo username: ")
-    
+    username = input("Username: ")
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        sock.connect((HOST, PORT))
-    except ConnectionRefusedError:
-        print("Impossibile connettersi al server. È acceso?")
-        return
-
-    # Avvia thread per ricevere messaggi
+    sock.connect((HOST, PORT))
+    
     listener = threading.Thread(target=listen_from_server, args=(sock,), daemon=True)
     listener.start()
 
-    # 1. Invia richiesta di Join
-    join_req = {"type": CMD_JOIN, "username": username}
-    send_json(sock, join_req)
+    send_json(sock, {"type": CMD_JOIN, "username": username})
 
-    # 2. Loop principale per input utente
     while True:
         try:
-            text = input()
-            
-            if not text: continue
+            user_input = input() # Input bloccante
+            if not user_input: continue
 
-            if text.lower() == "/quit":
-                break
+            # Gestione comandi di sistema
+            if user_input.lower() == "/quit": break
             
-            # COMANDO START (Solo per il Leader)
-            elif text.lower() == "/start":
-                if state.is_leader:
-                    if not state.game_running:
-                        print("[CLIENT] Invio richiesta avvio partita...")
-                        send_json(sock, {"type": CMD_START_GAME})
-                    else:
-                        print("[CLIENT] La partita è già in corso!")
+            if user_input.lower() == "/start":
+                if state.is_leader and not state.game_running:
+                    send_json(sock, {"type": CMD_START_GAME})
                 else:
-                    print("[CLIENT] Solo il Leader può avviare la partita.")
+                    print("[INFO] Non puoi avviare ora.")
+                continue
 
-            # QUI ANDRA' LA LOGICA PER INVIARE PROPOSTE
-            # else:
-            #     if state.game_running and not state.am_i_narrator:
-            #          send_proposal(...)
-            
-        except EOFError:
-            break
-        except KeyboardInterrupt:
-            break
-        
+            # --- GESTIONE INVIO PROPOSTE (Solo in fase EDITING) ---
+            if state.game_running:
+                if state.phase == STATE_EDITING:
+                    # Invia la proposta al server
+                    proposal_msg = {
+                        "type": CMD_SUBMIT,
+                        "text": user_input
+                    }
+                    send_json(sock, proposal_msg)
+                    
+                    # Cambio stato locale: EDITING -> WAITING
+                    state.phase = STATE_WAITING
+                    print("[INFO] Proposta inviata! In attesa della decisione del narratore...")
+                
+                elif state.phase == STATE_WAITING:
+                    print("[INFO] Hai già inviato una proposta. Aspetta il prossimo turno.")
+                
+                elif state.phase == STATE_VIEWING:
+                    if state.am_i_narrator:
+                        print("[INFO] Sei il narratore, non puoi proporre frasi.")
+                    else:
+                        print("[INFO] Non è ancora il momento di scrivere.")
+
+        except EOFError: break
+    
     sock.close()
-    print("Chiusura client.")
 
 if __name__ == "__main__":
     start_client()
