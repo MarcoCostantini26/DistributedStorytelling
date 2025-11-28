@@ -4,6 +4,7 @@ import sys
 import os
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from common.protocol import (
     send_json, recv_json, 
     CMD_JOIN, EVT_WELCOME, 
@@ -12,7 +13,10 @@ from common.protocol import (
     CMD_HEARTBEAT,
     CMD_SELECT_PROPOSAL,
     EVT_NARRATOR_DECISION_NEEDED,
-    EVT_STORY_UPDATE
+    EVT_STORY_UPDATE,
+    EVT_ASK_CONTINUE,
+    CMD_DECIDE_CONTINUE,
+    EVT_GAME_ENDED
 )
 from gamestate import GameState
 
@@ -156,11 +160,68 @@ def handle_client(conn, addr):
                     with lock:
                         for sock in active_connections.values():
                             send_json(sock, update_msg)
-                            
-                    # Qui potresti far ripartire subito un nuovo segmento
-                    # game_state.start_new_segment() ... (come fatto prima)
+
+                    print(f"Attendo decisione dal narratore {user_id}...")
+                    send_json(conn, {"type": EVT_ASK_CONTINUE}) 
+                    # --------------------
+
                 else:
-                    send_json(conn, {"type": "ERROR", "msg": "ID Proposta non valido"})
+                    send_json(conn, {"type": "ERROR", "msg": "ID non valido"})
+                    # --- [AGGIUNTA] START NUOVO SEGMENTO ---
+                    
+                    # 2. Prepara il GameState per il nuovo round
+                    new_seg_id = game_state.start_new_segment()
+                    
+                    # 3. Avvisa tutti i client di abilitare la scrittura (INPUT ON)
+                    new_segment_msg = {
+                        "type": EVT_NEW_SEGMENT,
+                        "segment_id": new_seg_id
+                    }
+
+                    with lock:
+                        for sock in active_connections.values():
+                            send_json(sock, new_segment_msg)
+                            
+                    print(f"Storia aggiornata. Avviato segmento {new_seg_id}")
+                    # ---------------------------------------
+            # --- GESTIONE DECISIONE CONTINUA/STOP ---
+            elif msg_type == CMD_DECIDE_CONTINUE:
+                # Solo il narratore può decidere
+                if user_id != game_state.narrator:
+                    continue
+                
+                action = msg.get('action') # Ci aspettiamo "CONTINUE" o "STOP"
+
+                if action == "CONTINUE":
+                    # --- CASO 1: SI CONTINUA ---
+                    new_seg_id = game_state.start_new_segment()
+                    
+                    msg_segment = {
+                        "type": EVT_NEW_SEGMENT, 
+                        "segment_id": new_seg_id
+                    }
+                    with lock:
+                        for sock in active_connections.values():
+                            send_json(sock, msg_segment)
+                    print(f"Il narratore ha scelto di continuare. Segmento {new_seg_id}")
+
+                elif action == "STOP":
+                    # --- CASO 2: FINE PARTITA ---
+                    print("Il narratore ha chiuso la partita.")
+                    
+                    # Qui in futuro metteremo il salvataggio su file (game_state.save_story...)
+                    
+                    end_msg = {
+                        "type": EVT_GAME_ENDED,
+                        "final_story": game_state.story
+                    }
+                    with lock:
+                        for sock in active_connections.values():
+                            send_json(sock, end_msg)
+                            
+                    # Reset dello stato per una eventuale nuova partita futura
+                    # (Opzionale, dipende se vuoi chiudere il server o resettare la lobby)
+                    game_state.is_running = False
             # --- GESTIONE HEARTBEAT ---
             elif msg_type == CMD_HEARTBEAT:
                 pass
