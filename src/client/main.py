@@ -9,12 +9,12 @@ from common.protocol import *
 HOST = '127.0.0.1'
 PORT = 65432
 
-# Stati Client
 STATE_VIEWING = "VIEWING"
 STATE_EDITING = "EDITING"
 STATE_WAITING = "WAITING"
-STATE_DECIDING = "DECIDING"          # Narratore sceglie proposta
-STATE_DECIDING_CONTINUE = "DECIDING_CONTINUE" # Narratore sceglie se continuare
+STATE_DECIDING = "DECIDING"
+STATE_DECIDING_CONTINUE = "DECIDING_CONTINUE"
+STATE_VOTING = "VOTING"
 
 class ClientState:
     def __init__(self):
@@ -86,8 +86,34 @@ def listen_from_server(sock):
             elif msg_type == EVT_GAME_ENDED:
                 print("\n" + "="*40 + "\nLA PARTITA È FINITA!\n" + "="*40)
                 state.game_running = False
+                state.phase = STATE_VOTING
+                state.is_spectator = False 
+                print("\n[VOTAZIONE] Nuova partita?")
+                print(">>> Scrivi 'S' (Sì) per restare in Lobby, 'N' (No) per uscire. <<<")
+
+            elif msg_type == EVT_VOTE_UPDATE:
+                print(f"[VOTO] Hanno votato {msg.get('count')} su {msg.get('needed')} giocatori.")
+
+            # --- RITORNO IN LOBBY (Per chi vota SÌ) ---
+            elif msg_type == EVT_RETURN_TO_LOBBY:
+                state.game_running = False
                 state.phase = STATE_VIEWING
-                if state.is_leader: print("Digita '/start' per una nuova partita.")
+                state.is_spectator = False
+                state.am_i_narrator = False
+                print("\n" + "#"*40)
+                print("SEI IN LOBBY. Attendi che il Leader avvii la partita.")
+                if state.is_leader: print("(Tu sei il Leader: scrivi /start)")
+                print("#"*40 + "\n")
+            
+            # --- GOODBYE (Per chi vota NO) ---
+            elif msg_type == EVT_GOODBYE:
+                print("\n" + "*"*40)
+                print(f"[SERVER] {msg.get('msg')}")
+                print("Premi INVIO per chiudere.")
+                print("*"*40)
+                # Uscirà dal loop alla prossima lettura socket o input
+                sock.close()
+                break
 
             elif msg_type == EVT_WELCOME:
                 state.is_leader = msg.get('is_leader')
@@ -124,8 +150,18 @@ def start_client():
                     print("[INFO] Non puoi avviare ora.")
                 continue
 
-            # LOGICA INPUT BASATA SUGLI STATI
-            if state.phase == STATE_DECIDING_CONTINUE:
+            # --- GESTIONE VOTO S/N ---
+            if state.phase == STATE_VOTING:
+                if user_input.upper() == "S":
+                    send_json(sock, {"type": CMD_VOTE_RESTART}) 
+                    print("Hai votato SÌ. Se tutti votano, andrai in Lobby.")
+                elif user_input.upper() == "N":
+                    send_json(sock, {"type": CMD_VOTE_NO})
+                    print("Hai votato NO. Se tutti votano, uscirai dal gioco.")
+                else:
+                    print("Scrivi 'S' o 'N'.")
+            
+            elif state.phase == STATE_DECIDING_CONTINUE:
                 if user_input.upper() == "C":
                     send_json(sock, {"type": CMD_DECIDE_CONTINUE, "action": "CONTINUE"})
                     state.phase = STATE_VIEWING
