@@ -4,13 +4,9 @@ import os
 
 class GameState:
     def __init__(self):
-        self.players = {}           # Map[addr_tuple, username]
-        self.active_story_players = [] 
-        
-        # --- GESTIONE VOTI (DIZIONARIO) ---
-        self.player_votes = {}      # Map[user_id, True/False] (True=SI, False=NO)
-        # ----------------------------------
-
+        self.players = {}           
+        self.story_usernames = []   
+        self.player_votes = {}      
         self.leader = None
         self.narrator = None  
         self.story = []       
@@ -18,7 +14,6 @@ class GameState:
         self.active_proposals = [] 
         self.is_running = False
         self.current_segment_id = 0
-        
         self.available_themes = []
         self._load_themes()
 
@@ -29,46 +24,53 @@ class GameState:
             with open(theme_path, 'r', encoding='utf-8') as f:
                 self.available_themes = json.load(f)
             print(f"[SERVER] Caricati {len(self.available_themes)} temi.")
-        except Exception as e:
-            print(f"[ATTENZIONE] Errore temi ({e}). Uso default.")
-            self.available_themes = ["Tema Default: Avventura Improvvisata"]
+        except Exception:
+            self.available_themes = ["Tema Default"]
 
     def add_player(self, addr, username):
+        clean_name = username.strip()
         if not self.players:
             self.leader = addr
-        self.players[addr] = username
-        print(f"Giocatore aggiunto: {username} ({addr}).")
+        self.players[addr] = clean_name
+        print(f"Giocatore aggiunto: {clean_name} ({addr}).")
+        return clean_name
 
     def remove_player(self, addr):
+        new_leader_addr = None # Variabile per tracciare il cambio leader
+        
         if addr in self.players:
+            username = self.players[addr]
             del self.players[addr]
-            # Se il leader esce, passiamo il ruolo al prossimo
+            
+            # Se esce il leader
             if addr == self.leader:
                 if self.players:
                     self.leader = list(self.players.keys())[0]
+                    new_leader_addr = self.leader # Segnaliamo chi è il nuovo
                     print(f"[INFO] Nuovo Leader assegnato: {self.players[self.leader]}")
                 else:
                     self.leader = None
             
-            # Rimuoviamo anche dai voti
             if addr in self.player_votes:
                 del self.player_votes[addr]
+            
+            print(f"[INFO] {username} si è disconnesso.")
+        
+        return new_leader_addr # Ritorniamo l'indirizzo del nuovo leader
 
     def register_vote(self, user_id, is_yes):
-        """Registra la scelta specifica dell'utente."""
         self.player_votes[user_id] = is_yes
         return len(self.player_votes)
 
     def start_new_story(self):
-        # Reset voti
         self.player_votes.clear()
-
         if len(self.players) < 2:
-            return False, "Servono almeno 2 giocatori per iniziare."
+            return False, "Servono almeno 2 giocatori."
         
         self.is_running = True
-        self.active_story_players = list(self.players.keys())
-        self.narrator = random.choice(self.active_story_players)
+        self.story_usernames = list(self.players.values())
+        
+        self.narrator = random.choice(list(self.players.keys()))
         
         if self.available_themes:
             self.current_theme = random.choice(self.available_themes)
@@ -93,23 +95,35 @@ class GameState:
         if user_id == self.narrator:
             return False, "Il narratore non può inviare proposte."
         
-        if user_id not in self.active_story_players:
+        username = self.players.get(user_id)
+        if username not in self.story_usernames:
              return False, "Gli spettatori non possono scrivere."
 
         proposal = {
             "id": len(self.active_proposals),
-            "author": self.players.get(user_id, "Sconosciuto"),
+            "author": username,
             "text": text
         }
         self.active_proposals.append(proposal)
         return True, proposal
 
+    def count_active_writers(self):
+        count = 0
+        for addr, name in self.players.items():
+            if name in self.story_usernames and addr != self.narrator:
+                count += 1
+        return count
+    
+    def has_user_submitted(self, username):
+        for p in self.active_proposals:
+            if p['author'] == username:
+                return True
+        return False
+
     def select_proposal(self, proposal_id):
         selected = next((p for p in self.active_proposals if p['id'] == proposal_id), None)
-        
         if selected:
-            full_segment_text = selected['text']
-            self.story.append(full_segment_text)
+            self.story.append(selected['text'])
             self.active_proposals = []
             return True, self.story
         return False, None

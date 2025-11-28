@@ -1,7 +1,7 @@
 import json
 import struct
 
-# Costanti per i comandi (Client -> Server)
+# Comandi (Client -> Server)
 CMD_START_GAME = "START_GAME"
 CMD_JOIN = "JOIN_STORY"
 CMD_SUBMIT = "SUBMIT_PROPOSAL"
@@ -12,7 +12,7 @@ CMD_DECIDE_CONTINUE = "DECIDE_CONTINUE"
 CMD_VOTE_RESTART = "VOTE_RESTART"
 CMD_VOTE_NO = "VOTE_NO"
 
-# Costanti per gli eventi (Server -> Client)
+# Eventi (Server -> Client)
 EVT_GAME_STARTED = "GAME_STARTED"
 EVT_WELCOME = "WELCOME"
 EVT_NEW_ROUND = "START_STORY"
@@ -25,8 +25,9 @@ EVT_STORY_UPDATE = "STORY_UPDATE"
 EVT_ASK_CONTINUE = "ASK_CONTINUE"
 EVT_GAME_ENDED = "GAME_ENDED"
 EVT_VOTE_UPDATE = "VOTE_UPDATE"
-EVT_RETURN_TO_LOBBY = "RETURN_TO_LOBBY" # Per chi vota SI
-EVT_GOODBYE = "GOODBYE"                 # Per chi vota NO <--- NUOVO
+EVT_RETURN_TO_LOBBY = "RETURN_TO_LOBBY"
+EVT_GOODBYE = "GOODBYE"
+EVT_LEADER_UPDATE = "LEADER_UPDATE"  
 
 def send_json(sock, data):
     msg_body = json.dumps(data).encode('utf-8')
@@ -36,19 +37,16 @@ def send_json(sock, data):
 def recv_json(sock):
     try:
         raw_msglen = recvall(sock, 4)
-        if not raw_msglen:
-            return None
+        if not raw_msglen: return None
         msglen = struct.unpack('!I', raw_msglen)[0]
         raw_msg = recvall(sock, msglen)
         return json.loads(raw_msg.decode('utf-8'))
-    except Exception as e:
-        return None
+    except Exception as e: return None
 
 def recvall(sock, n):
     data = bytearray()
     while len(data) < n:
         packet = sock.recv(n - len(data))
-        if not packet:
-            return None
+        if not packet: return None
         data.extend(packet)
     return data

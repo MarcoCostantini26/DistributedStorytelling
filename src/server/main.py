@@ -17,64 +17,47 @@ lock = threading.Lock()
 def send_to_all(msg):
     with lock:
         for sock in active_connections.values():
-            try:
-                send_json(sock, msg)
+            try: send_json(sock, msg)
             except: pass
 
+def check_round_completion():
+    active_writers = game_state.count_active_writers()
+    current_props = len(game_state.active_proposals)
+    
+    print(f"[CHECK ROUND] Proposte ricevute: {current_props} su {active_writers} attivi.")
+    if current_props >= active_writers and active_writers > 0:
+        print("[INFO] Turno completato.")
+        decision_msg = {"type": EVT_NARRATOR_DECISION_NEEDED, "proposals": game_state.active_proposals}
+        with lock:
+            if game_state.narrator in active_connections:
+                send_json(active_connections[game_state.narrator], decision_msg)
+
 def process_vote_check():
-    """Controlla se tutti hanno votato e smista i giocatori."""
     total_connected = len(game_state.players)
     total_voted = len(game_state.player_votes)
+    send_to_all({"type": EVT_VOTE_UPDATE, "count": total_voted, "needed": total_connected})
 
-    # Info Broadcast
-    send_to_all({
-        "type": EVT_VOTE_UPDATE, 
-        "count": total_voted, 
-        "needed": total_connected
-    })
-
-    # SE TUTTI HANNO VOTATO
     if total_voted >= total_connected and total_connected > 0:
-        print("[VOTO CONCLUSO] Elaborazione esiti...")
-        
-        # 1. Reset stato gioco
+        print("[VOTO CONCLUSO] Elaborazione...")
         game_state.is_running = False
-        
-        # 2. Lista di chi deve uscire
         users_leaving = []
-
-        # 3. Iteriamo sui voti e mandiamo messaggi diversi
         with lock:
             for user_id, vote_is_yes in game_state.player_votes.items():
                 sock = active_connections.get(user_id)
                 if not sock: continue
-
-                if vote_is_yes:
-                    # HA VOTATO SÌ -> LOBBY
-                    send_json(sock, {"type": EVT_RETURN_TO_LOBBY})
+                if vote_is_yes: send_json(sock, {"type": EVT_RETURN_TO_LOBBY})
                 else:
-                    # HA VOTATO NO -> GOODBYE
-                    send_json(sock, {"type": EVT_GOODBYE, "msg": "Grazie per aver giocato! Alla prossima."})
+                    send_json(sock, {"type": EVT_GOODBYE, "msg": "Arrivederci!"})
                     users_leaving.append(user_id)
-
-        # 4. Rimuoviamo effettivamente chi ha votato NO
-        for user_id in users_leaving:
-            print(f"[SERVER] Rimuovo {user_id} che ha votato NO.")
-            # Chiudiamo il socket lato server per pulizia
-            with lock:
-                if user_id in active_connections:
-                    try:
-                        active_connections[user_id].close()
-                    except: pass
-                    del active_connections[user_id]
-            
-            # Rimuoviamo dal GameState
-            game_state.remove_player(user_id)
-
-        # 5. Pulizia voti per il prossimo round
-        game_state.player_votes.clear()
         
-        print(f"[SERVER] Rimasti in Lobby: {len(game_state.players)} giocatori.")
+        for uid in users_leaving:
+            with lock:
+                if uid in active_connections:
+                    try: active_connections[uid].close()
+                    except: pass
+                    del active_connections[uid]
+            game_state.remove_player(uid)
+        game_state.player_votes.clear()
 
 def handle_client(conn, addr):
     print(f"Nuova connessione da {addr}")
@@ -89,29 +72,44 @@ def handle_client(conn, addr):
             msg_type = msg.get('type')
             
             if msg_type == CMD_JOIN:
-                username = msg.get('username', 'Anonimo')
-                game_state.add_player(user_id, username)
+                raw_username = msg.get('username', 'Anonimo')
+                username = game_state.add_player(user_id, raw_username)
                 
                 is_leader = (game_state.leader == user_id)
                 send_json(conn, {"type": EVT_WELCOME, "msg": f"Benvenuto {username}!", "is_leader": is_leader})
 
                 if game_state.is_running:
-                    print(f"[INFO] {username} è entrato come SPETTATORE.")
-                    send_json(conn, {
-                        "type": EVT_GAME_STARTED,
-                        "narrator": game_state.players.get(game_state.narrator, "???"),
-                        "theme": game_state.current_theme,
-                        "am_i_narrator": False,
-                        "is_spectator": True
-                    })
-                    send_json(conn, {"type": EVT_STORY_UPDATE, "story": game_state.story})
+                    if username in game_state.story_usernames:
+                        print(f"[INFO] SCRITTORE RITROVATO: {username}")
+                        narrator_name = game_state.players.get(game_state.narrator, "???")
+                        am_i_narrator = (game_state.narrator == user_id)
+                        send_json(conn, {
+                            "type": EVT_GAME_STARTED,
+                            "narrator": narrator_name,
+                            "theme": game_state.current_theme,
+                            "am_i_narrator": am_i_narrator,
+                            "is_spectator": False 
+                        })
+                        send_json(conn, {"type": EVT_STORY_UPDATE, "story": game_state.story})
+                        if not am_i_narrator and not game_state.has_user_submitted(username):
+                            send_json(conn, {"type": EVT_NEW_SEGMENT, "segment_id": game_state.current_segment_id})
+                    else:
+                        print(f"[INFO] NUOVO SPETTATORE: {username}")
+                        send_json(conn, {
+                            "type": EVT_GAME_STARTED,
+                            "narrator": game_state.players.get(game_state.narrator, "???"),
+                            "theme": game_state.current_theme,
+                            "am_i_narrator": False,
+                            "is_spectator": True
+                        })
+                        send_json(conn, {"type": EVT_STORY_UPDATE, "story": game_state.story})
 
             elif msg_type == CMD_START_GAME:
                 if game_state.is_running:
-                     send_json(conn, {"type": "ERROR", "msg": "Partita già in corso."})
+                     send_json(conn, {"type": "ERROR", "msg": "Partita in corso."})
                      continue
                 if game_state.leader != user_id:
-                    send_json(conn, {"type": "ERROR", "msg": "Solo il leader può iniziare."})
+                    send_json(conn, {"type": "ERROR", "msg": "Solo leader."})
                     continue
 
                 success, info = game_state.start_new_story()
@@ -127,7 +125,6 @@ def handle_client(conn, addr):
                             evt_personal = evt.copy()
                             evt_personal["am_i_narrator"] = (p_addr == info['narrator_id'])
                             send_json(p_sock, evt_personal)
-                    
                     seg_id = game_state.start_new_segment()
                     send_to_all({"type": EVT_NEW_SEGMENT, "segment_id": seg_id})
                 else:
@@ -137,13 +134,7 @@ def handle_client(conn, addr):
                 text = msg.get('text')
                 success, result = game_state.add_proposal(user_id, text)
                 if success:
-                    total_writers = len(game_state.active_story_players) - 1
-                    current_proposals = len(game_state.active_proposals)
-                    if current_proposals >= total_writers:
-                        decision_msg = {"type": EVT_NARRATOR_DECISION_NEEDED, "proposals": game_state.active_proposals}
-                        with lock:
-                            if game_state.narrator in active_connections:
-                                send_json(active_connections[game_state.narrator], decision_msg)
+                    check_round_completion()
                 else:
                     send_json(conn, {"type": "ERROR", "msg": result})
 
@@ -154,48 +145,50 @@ def handle_client(conn, addr):
                 if success:
                     send_to_all({"type": EVT_STORY_UPDATE, "story": new_story})
                     send_json(conn, {"type": EVT_ASK_CONTINUE})
-                else:
-                    send_json(conn, {"type": "ERROR", "msg": "ID non valido"})
 
             elif msg_type == CMD_DECIDE_CONTINUE:
                 if user_id != game_state.narrator: continue
                 action = msg.get('action')
-
                 if action == "CONTINUE":
                     new_seg_id = game_state.start_new_segment()
                     send_to_all({"type": EVT_NEW_SEGMENT, "segment_id": new_seg_id})
-
                 elif action == "STOP":
-                    print("Narratore ha chiuso la partita. Attesa voti...")
+                    print("Stop dal narratore.")
                     send_to_all({"type": EVT_GAME_ENDED, "final_story": game_state.story})
                     game_state.is_running = False 
 
-            # --- GESTIONE VOTO RESTART (SI) ---
             elif msg_type == CMD_VOTE_RESTART:
-                game_state.register_vote(user_id, is_yes=True)
-                print(f"[VOTO] {user_id} ha votato SI.")
+                game_state.register_vote(user_id, True)
                 process_vote_check()
-
-            # --- GESTIONE VOTO NO (NO) ---
             elif msg_type == CMD_VOTE_NO:
-                game_state.register_vote(user_id, is_yes=False)
-                print(f"[VOTO] {user_id} ha votato NO.")
+                game_state.register_vote(user_id, False)
                 process_vote_check()
-            # -----------------------------
-
             elif msg_type == CMD_HEARTBEAT:
                 pass
 
     except ConnectionResetError:
         print(f"Connessione persa con {addr}")
     finally:
-        # Se l'utente era già stato rimosso (perchè ha votato NO), questo blocco non fa danni
         with lock:
             if addr in active_connections: del active_connections[addr]
-        game_state.remove_player(user_id)
-        # Se qualcuno esce (crash) durante il voto, ricalcoliamo
-        if not game_state.is_running and game_state.player_votes: 
-             process_vote_check()
+        
+        # --- FIX LEADER ROTATION ---
+        # Se remove_player ci ritorna un indirizzo, significa che il leader è cambiato
+        new_leader_id = game_state.remove_player(user_id)
+        
+        # Notifichiamo il nuovo leader!
+        if new_leader_id:
+            with lock:
+                if new_leader_id in active_connections:
+                    print(f"[SERVER] Notifico il nuovo leader: {new_leader_id}")
+                    send_json(active_connections[new_leader_id], {
+                        "type": EVT_LEADER_UPDATE, 
+                        "msg": "Il Leader precedente è uscito. Ora sei tu il Leader!"
+                    })
+        # ---------------------------
+
+        if game_state.is_running: check_round_completion()
+        elif not game_state.is_running and game_state.player_votes: process_vote_check()
         conn.close()
 
 def start_server():

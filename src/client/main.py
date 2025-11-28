@@ -94,7 +94,6 @@ def listen_from_server(sock):
             elif msg_type == EVT_VOTE_UPDATE:
                 print(f"[VOTO] Hanno votato {msg.get('count')} su {msg.get('needed')} giocatori.")
 
-            # --- RITORNO IN LOBBY (Per chi vota SÌ) ---
             elif msg_type == EVT_RETURN_TO_LOBBY:
                 state.game_running = False
                 state.phase = STATE_VIEWING
@@ -105,13 +104,20 @@ def listen_from_server(sock):
                 if state.is_leader: print("(Tu sei il Leader: scrivi /start)")
                 print("#"*40 + "\n")
             
-            # --- GOODBYE (Per chi vota NO) ---
+            # --- NUOVO: GESTIONE CAMBIO LEADER ---
+            elif msg_type == EVT_LEADER_UPDATE:
+                state.is_leader = True
+                print("\n" + "!"*40)
+                print(f"[INFO] {msg.get('msg')}")
+                print("Ora puoi usare il comando '/start'.")
+                print("!"*40 + "\n")
+            # -------------------------------------
+
             elif msg_type == EVT_GOODBYE:
                 print("\n" + "*"*40)
                 print(f"[SERVER] {msg.get('msg')}")
                 print("Premi INVIO per chiudere.")
                 print("*"*40)
-                # Uscirà dal loop alla prossima lettura socket o input
                 sock.close()
                 break
 
@@ -150,14 +156,13 @@ def start_client():
                     print("[INFO] Non puoi avviare ora.")
                 continue
 
-            # --- GESTIONE VOTO S/N ---
             if state.phase == STATE_VOTING:
                 if user_input.upper() == "S":
                     send_json(sock, {"type": CMD_VOTE_RESTART}) 
-                    print("Hai votato SÌ. Se tutti votano, andrai in Lobby.")
+                    print("Voto SI inviato! In attesa...")
                 elif user_input.upper() == "N":
                     send_json(sock, {"type": CMD_VOTE_NO})
-                    print("Hai votato NO. Se tutti votano, uscirai dal gioco.")
+                    print("Voto NO inviato! In attesa...")
                 else:
                     print("Scrivi 'S' o 'N'.")
             
