@@ -172,23 +172,40 @@ def handle_client(conn, addr):
         with lock:
             if addr in active_connections: del active_connections[addr]
         
-        # --- FIX LEADER ROTATION ---
-        # Se remove_player ci ritorna un indirizzo, significa che il leader è cambiato
+        # --- LOGICA DISCONNESSIONE CRITICA ---
+        # 1. Controlliamo se chi esce è il Narratore
+        if game_state.is_running and user_id == game_state.narrator:
+            print("[ALERT] Il Narratore si è disconnesso! Abort game.")
+            
+            # Avvisa tutti e manda in Lobby
+            send_to_all({
+                "type": EVT_RETURN_TO_LOBBY, 
+                "msg": "Il Narratore si è disconnesso. La partita è terminata."
+            })
+            
+            # Resetta il gioco
+            game_state.abort_game()
+        
+        # 2. Rimuoviamo il giocatore (Gestisce elezione nuovo Leader se serve)
         new_leader_id = game_state.remove_player(user_id)
         
-        # Notifichiamo il nuovo leader!
+        # 3. Notifica cambio Leader
         if new_leader_id:
             with lock:
                 if new_leader_id in active_connections:
-                    print(f"[SERVER] Notifico il nuovo leader: {new_leader_id}")
                     send_json(active_connections[new_leader_id], {
                         "type": EVT_LEADER_UPDATE, 
                         "msg": "Il Leader precedente è uscito. Ora sei tu il Leader!"
                     })
-        # ---------------------------
 
-        if game_state.is_running: check_round_completion()
-        elif not game_state.is_running and game_state.player_votes: process_vote_check()
+        # 4. Se il gioco continua (era uno scrittore), controlla se il turno è finito
+        if game_state.is_running: 
+            check_round_completion()
+        
+        # 5. Se eravamo in fase di voto
+        elif not game_state.is_running and game_state.player_votes: 
+            process_vote_check()
+             
         conn.close()
 
 def start_server():

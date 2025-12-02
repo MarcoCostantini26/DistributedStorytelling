@@ -41,7 +41,7 @@ def listen_from_server(sock):
                 
                 print(f"\n[INFO] Nuova storia iniziata! Tema: {msg.get('theme')}")
                 if state.is_spectator:
-                    print("[RUOLO] Sei entrato a partita in corso. Modalità SPETTATORE.")
+                    print("[RUOLO] Sei entrato come SPETTATORE.")
                 elif state.am_i_narrator:
                     print("[RUOLO] Sei il NARRATORE. Attendi le proposte.")
                 else:
@@ -94,14 +94,24 @@ def listen_from_server(sock):
             elif msg_type == EVT_VOTE_UPDATE:
                 print(f"[VOTO] Hanno votato {msg.get('count')} su {msg.get('needed')} giocatori.")
 
+            # --- RITORNO IN LOBBY (AGGIORNATO) ---
             elif msg_type == EVT_RETURN_TO_LOBBY:
                 state.game_running = False
                 state.phase = STATE_VIEWING
                 state.is_spectator = False
                 state.am_i_narrator = False
                 print("\n" + "#"*40)
-                print("SEI IN LOBBY. Attendi che il Leader avvii la partita.")
-                if state.is_leader: print("(Tu sei il Leader: scrivi /start)")
+                print("SEI IN LOBBY.")
+                
+                # Mostra messaggio se presente (es. Narratore disconnesso)
+                if msg.get('msg'):
+                    print(f"MOTIVO: {msg.get('msg')}")
+                
+                print("-" * 20)
+                if state.is_leader:
+                    print("LEADER: Digita '/start' quando vuoi iniziare la nuova partita.")
+                else:
+                    print("Attendi che il Leader avvii la partita...")
                 print("#"*40 + "\n")
             
             # --- NUOVO: GESTIONE CAMBIO LEADER ---
@@ -109,7 +119,7 @@ def listen_from_server(sock):
                 state.is_leader = True
                 print("\n" + "!"*40)
                 print(f"[INFO] {msg.get('msg')}")
-                print("Ora puoi usare il comando '/start'.")
+                print("Ora hai i permessi per usare '/start'.")
                 print("!"*40 + "\n")
             # -------------------------------------
 
@@ -135,7 +145,7 @@ def listen_from_server(sock):
     os._exit(0)
 
 def start_client():
-    print("--- CLIENT STORYTELLING ---")
+    print("--- CLIENT STORYTELLING (CLI) ---")
     username = input("Username: ")
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((HOST, PORT))

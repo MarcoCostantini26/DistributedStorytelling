@@ -36,17 +36,17 @@ class GameState:
         return clean_name
 
     def remove_player(self, addr):
-        new_leader_addr = None # Variabile per tracciare il cambio leader
+        new_leader_addr = None 
         
         if addr in self.players:
             username = self.players[addr]
             del self.players[addr]
             
-            # Se esce il leader
+            # Se esce il leader, ne eleggiamo uno nuovo tra i presenti
             if addr == self.leader:
                 if self.players:
                     self.leader = list(self.players.keys())[0]
-                    new_leader_addr = self.leader # Segnaliamo chi è il nuovo
+                    new_leader_addr = self.leader
                     print(f"[INFO] Nuovo Leader assegnato: {self.players[self.leader]}")
                 else:
                     self.leader = None
@@ -56,7 +56,7 @@ class GameState:
             
             print(f"[INFO] {username} si è disconnesso.")
         
-        return new_leader_addr # Ritorniamo l'indirizzo del nuovo leader
+        return new_leader_addr
 
     def register_vote(self, user_id, is_yes):
         self.player_votes[user_id] = is_yes
@@ -85,6 +85,14 @@ class GameState:
             "narrator_name": self.players[self.narrator],
             "theme": self.current_theme
         }
+
+    def abort_game(self):
+        """Resetta lo stato del gioco in caso di crash del narratore."""
+        self.is_running = False
+        self.active_proposals = []
+        self.player_votes.clear()
+        self.story_usernames = []
+        print("[GAMESTATE] Partita abortita. Reset stato completato.")
 
     def start_new_segment(self):
         self.current_segment_id += 1
