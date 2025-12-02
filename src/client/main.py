@@ -2,6 +2,7 @@ import socket
 import threading
 import sys
 import os
+import time
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from common.protocol import *
@@ -16,6 +17,50 @@ STATE_DECIDING = "DECIDING"
 STATE_DECIDING_CONTINUE = "DECIDING_CONTINUE"
 STATE_VOTING = "VOTING"
 
+# --- CLASSE TIMER PER LA CLI ---
+class InputTimer:
+    def __init__(self):
+        self._stop_event = threading.Event()
+        self._thread = None
+
+    def start(self, duration):
+        """Avvia il countdown in background."""
+        self.stop() # Ferma eventuali timer precedenti
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, args=(duration,), daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        """Ferma il countdown (es. utente ha scritto)."""
+        if self._thread:
+            self._stop_event.set()
+            self._thread.join(timeout=0.1) # Aspetta brevemente che chiuda
+            self._thread = None
+
+    def _run(self, duration):
+        """Logica del countdown."""
+        remaining = duration
+        while remaining > 0:
+            if self._stop_event.is_set():
+                return
+            
+            # --- AVVISI GRAFICI ---
+            # Stampiamo avvisi a intervalli utili
+            if remaining == 30:
+                print(f"\n\n[TIMER] ⏳ Mancano 30 secondi!\n> ", end="", flush=True)
+            elif remaining == 10:
+                print(f"\n\n[TIMER] ⚠️  10 SECONDI RIMASTI!\n> ", end="", flush=True)
+            elif remaining <= 5 and remaining > 0:
+                print(f"\n[TIMER] {remaining}...", end="", flush=True)
+            
+            time.sleep(1)
+            remaining -= 1
+        
+        if not self._stop_event.is_set():
+            print("\n[TIMER] ⏰ TEMPO SCADUTO! In attesa del server...\n", flush=True)
+
+# -------------------------------
+
 class ClientState:
     def __init__(self):
         self.is_leader = False
@@ -25,6 +70,7 @@ class ClientState:
         self.phase = STATE_VIEWING
 
 state = ClientState()
+cli_timer = InputTimer() # Istanza globale del timer
 
 def listen_from_server(sock):
     while True:
@@ -32,6 +78,11 @@ def listen_from_server(sock):
             msg = recv_json(sock)
             if not msg: break
             msg_type = msg.get('type')
+            timeout = msg.get('timeout', 0)
+
+            # Se arriva un messaggio, resettiamo il timer precedente per evitare sovrapposizioni
+            # Lo riavvieremo sotto se serve
+            cli_timer.stop()
 
             if msg_type == EVT_GAME_STARTED:
                 state.game_running = True
@@ -40,15 +91,13 @@ def listen_from_server(sock):
                 state.phase = STATE_VIEWING
                 
                 print(f"\n[INFO] Nuova storia iniziata! Tema: {msg.get('theme')}")
-                if state.is_spectator:
-                    print("[RUOLO] Sei entrato come SPETTATORE.")
-                elif state.am_i_narrator:
-                    print("[RUOLO] Sei il NARRATORE. Attendi le proposte.")
-                else:
-                    print("[RUOLO] Sei uno SCRITTORE. Preparati a scrivere.")
+                if state.is_spectator: print("[RUOLO] Sei entrato come SPETTATORE.")
+                elif state.am_i_narrator: print("[RUOLO] Sei il NARRATORE. Attendi le proposte.")
+                else: print("[RUOLO] Sei uno SCRITTORE. Preparati a scrivere.")
 
             elif msg_type == EVT_NEW_SEGMENT:
                 print(f"\n--- INIZIO SEGMENTO {msg.get('segment_id')} ---")
+                
                 if state.is_spectator:
                     state.phase = STATE_VIEWING
                     print("(Spettatore) In attesa delle proposte...")
@@ -57,6 +106,9 @@ def listen_from_server(sock):
                     print("In attesa delle proposte degli scrittori...")
                 else:
                     state.phase = STATE_EDITING
+                    if timeout: 
+                        print(f"[TIMER] 🕒 Hai {timeout} secondi per scrivere!")
+                        cli_timer.start(timeout) # AVVIO TIMER
                     print(">>> TOCCA A TE! Scrivi la tua continuazione e premi Invio: <<<")
 
             elif msg_type == EVT_NARRATOR_DECISION_NEEDED:
@@ -65,6 +117,11 @@ def listen_from_server(sock):
                     proposals = msg.get('proposals')
                     print("\n" + "*"*40)
                     print("SCEGLI LA PROPOSTA MIGLIORE:")
+                    
+                    if timeout: 
+                        print(f"[TIMER] 🕒 Hai {timeout} secondi per decidere!")
+                        cli_timer.start(timeout) # AVVIO TIMER
+                        
                     for p in proposals:
                         print(f"[{p['id']}] {p['author']}: {p['text']}")
                     print("*"*40)
@@ -79,6 +136,11 @@ def listen_from_server(sock):
             elif msg_type == EVT_ASK_CONTINUE:
                 print("\n" + "="*40)
                 print("STORIA AGGIORNATA. Vuoi continuare?")
+                
+                if timeout: 
+                    print(f"[TIMER] 🕒 Auto-continue tra {timeout} secondi.")
+                    cli_timer.start(timeout) # AVVIO TIMER
+                    
                 print("Scrivi 'C' per Continuare, 'F' per Finire.")
                 print("="*40)
                 state.phase = STATE_DECIDING_CONTINUE
@@ -88,42 +150,39 @@ def listen_from_server(sock):
                 state.game_running = False
                 state.phase = STATE_VOTING
                 state.is_spectator = False 
+                
                 print("\n[VOTAZIONE] Nuova partita?")
+                if timeout: 
+                    print(f"[TIMER] 🕒 Seggio aperto per {timeout} secondi.")
+                    cli_timer.start(timeout) # AVVIO TIMER
+                    
                 print(">>> Scrivi 'S' (Sì) per restare in Lobby, 'N' (No) per uscire. <<<")
 
             elif msg_type == EVT_VOTE_UPDATE:
                 print(f"[VOTO] Hanno votato {msg.get('count')} su {msg.get('needed')} giocatori.")
 
-            # --- RITORNO IN LOBBY (AGGIORNATO) ---
             elif msg_type == EVT_RETURN_TO_LOBBY:
+                cli_timer.stop() # Stop timer votazione
                 state.game_running = False
                 state.phase = STATE_VIEWING
                 state.is_spectator = False
                 state.am_i_narrator = False
                 print("\n" + "#"*40)
                 print("SEI IN LOBBY.")
-                
-                # Mostra messaggio se presente (es. Narratore disconnesso)
-                if msg.get('msg'):
-                    print(f"MOTIVO: {msg.get('msg')}")
-                
-                print("-" * 20)
-                if state.is_leader:
-                    print("LEADER: Digita '/start' quando vuoi iniziare la nuova partita.")
-                else:
-                    print("Attendi che il Leader avvii la partita...")
+                if msg.get('msg'): print(f"MOTIVO: {msg.get('msg')}")
+                if state.is_leader: print("LEADER: Digita '/start' quando vuoi iniziare la nuova partita.")
+                else: print("Attendi che il Leader avvii la partita...")
                 print("#"*40 + "\n")
             
-            # --- NUOVO: GESTIONE CAMBIO LEADER ---
             elif msg_type == EVT_LEADER_UPDATE:
                 state.is_leader = True
                 print("\n" + "!"*40)
                 print(f"[INFO] {msg.get('msg')}")
                 print("Ora hai i permessi per usare '/start'.")
                 print("!"*40 + "\n")
-            # -------------------------------------
 
             elif msg_type == EVT_GOODBYE:
+                cli_timer.stop()
                 print("\n" + "*"*40)
                 print(f"[SERVER] {msg.get('msg')}")
                 print("Premi INVIO per chiudere.")
@@ -155,8 +214,12 @@ def start_client():
 
     while True:
         try:
+            # Input bloccante dell'utente
             user_input = input()
             if not user_input: continue
+
+            # Se l'utente scrive qualcosa, fermiamo gli avvisi del timer (ha agito!)
+            cli_timer.stop() 
 
             if user_input.lower() == "/quit": break
             if user_input.lower() == "/start":
