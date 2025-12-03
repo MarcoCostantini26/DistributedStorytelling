@@ -17,49 +17,43 @@ STATE_DECIDING = "DECIDING"
 STATE_DECIDING_CONTINUE = "DECIDING_CONTINUE"
 STATE_VOTING = "VOTING"
 
-# --- CLASSE TIMER PER LA CLI ---
+# --- TIMER OUTPUT ---
 class InputTimer:
     def __init__(self):
         self._stop_event = threading.Event()
         self._thread = None
 
     def start(self, duration):
-        """Avvia il countdown in background."""
-        self.stop() # Ferma eventuali timer precedenti
+        """Avvia un nuovo timer."""
+        self.stop() # Ferma eventuali vecchi timer
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, args=(duration,), daemon=True)
         self._thread.start()
 
     def stop(self):
-        """Ferma il countdown (es. utente ha scritto)."""
+        """Ferma il timer corrente."""
         if self._thread:
             self._stop_event.set()
-            self._thread.join(timeout=0.1) # Aspetta brevemente che chiuda
+            # Join con timeout molto breve per non bloccare l'UI
+            self._thread.join(timeout=0.01)
             self._thread = None
 
     def _run(self, duration):
-        """Logica del countdown."""
         remaining = duration
         while remaining > 0:
-            if self._stop_event.is_set():
-                return
+            if self._stop_event.is_set(): return
             
-            # --- AVVISI GRAFICI ---
-            # Stampiamo avvisi a intervalli utili
-            if remaining == 30:
-                print(f"\n\n[TIMER] ⏳ Mancano 30 secondi!\n> ", end="", flush=True)
-            elif remaining == 10:
-                print(f"\n\n[TIMER] ⚠️  10 SECONDI RIMASTI!\n> ", end="", flush=True)
-            elif remaining <= 5 and remaining > 0:
-                print(f"\n[TIMER] {remaining}...", end="", flush=True)
+            # Feedback testuale a intervalli utili
+            if remaining == 60: print(f"\n[TIMER] ⏳ 60s...", end="", flush=True)
+            elif remaining == 30: print(f"\n[TIMER] ⏳ 30s...", end="", flush=True)
+            elif remaining == 10: print(f"\n[TIMER] ⚠️ 10s!", end="", flush=True)
+            elif remaining <= 5: print(f"\n[TIMER] {remaining}...", end="", flush=True)
             
             time.sleep(1)
             remaining -= 1
         
         if not self._stop_event.is_set():
-            print("\n[TIMER] ⏰ TEMPO SCADUTO! In attesa del server...\n", flush=True)
-
-# -------------------------------
+            print("\n[TIMER] ⏰ TEMPO SCADUTO! Premi Invio per aggiornare...", flush=True)
 
 class ClientState:
     def __init__(self):
@@ -70,7 +64,18 @@ class ClientState:
         self.phase = STATE_VIEWING
 
 state = ClientState()
-cli_timer = InputTimer() # Istanza globale del timer
+cli_timer = InputTimer()
+
+# --- HEARTBEAT SENDER (NUOVO) ---
+def heartbeat_loop(sock):
+    """Invia un segnale al server ogni 3 secondi per dire 'Sono vivo'."""
+    while True:
+        time.sleep(3)
+        try:
+            send_json(sock, {"type": CMD_HEARTBEAT})
+        except:
+            break # Se c'è errore (socket chiuso), esce dal loop
+# --------------------------------
 
 def listen_from_server(sock):
     while True:
@@ -80,8 +85,7 @@ def listen_from_server(sock):
             msg_type = msg.get('type')
             timeout = msg.get('timeout', 0)
 
-            # Se arriva un messaggio, resettiamo il timer precedente per evitare sovrapposizioni
-            # Lo riavvieremo sotto se serve
+            # Resetta il timer all'arrivo di nuovi messaggi
             cli_timer.stop()
 
             if msg_type == EVT_GAME_STARTED:
@@ -108,7 +112,7 @@ def listen_from_server(sock):
                     state.phase = STATE_EDITING
                     if timeout: 
                         print(f"[TIMER] 🕒 Hai {timeout} secondi per scrivere!")
-                        cli_timer.start(timeout) # AVVIO TIMER
+                        cli_timer.start(timeout)
                     print(">>> TOCCA A TE! Scrivi la tua continuazione e premi Invio: <<<")
 
             elif msg_type == EVT_NARRATOR_DECISION_NEEDED:
@@ -117,11 +121,9 @@ def listen_from_server(sock):
                     proposals = msg.get('proposals')
                     print("\n" + "*"*40)
                     print("SCEGLI LA PROPOSTA MIGLIORE:")
-                    
                     if timeout: 
                         print(f"[TIMER] 🕒 Hai {timeout} secondi per decidere!")
-                        cli_timer.start(timeout) # AVVIO TIMER
-                        
+                        cli_timer.start(timeout)
                     for p in proposals:
                         print(f"[{p['id']}] {p['author']}: {p['text']}")
                     print("*"*40)
@@ -136,11 +138,9 @@ def listen_from_server(sock):
             elif msg_type == EVT_ASK_CONTINUE:
                 print("\n" + "="*40)
                 print("STORIA AGGIORNATA. Vuoi continuare?")
-                
                 if timeout: 
                     print(f"[TIMER] 🕒 Auto-continue tra {timeout} secondi.")
-                    cli_timer.start(timeout) # AVVIO TIMER
-                    
+                    cli_timer.start(timeout)
                 print("Scrivi 'C' per Continuare, 'F' per Finire.")
                 print("="*40)
                 state.phase = STATE_DECIDING_CONTINUE
@@ -154,15 +154,14 @@ def listen_from_server(sock):
                 print("\n[VOTAZIONE] Nuova partita?")
                 if timeout: 
                     print(f"[TIMER] 🕒 Seggio aperto per {timeout} secondi.")
-                    cli_timer.start(timeout) # AVVIO TIMER
-                    
+                    cli_timer.start(timeout)
                 print(">>> Scrivi 'S' (Sì) per restare in Lobby, 'N' (No) per uscire. <<<")
 
             elif msg_type == EVT_VOTE_UPDATE:
                 print(f"[VOTO] Hanno votato {msg.get('count')} su {msg.get('needed')} giocatori.")
 
             elif msg_type == EVT_RETURN_TO_LOBBY:
-                cli_timer.stop() # Stop timer votazione
+                cli_timer.stop()
                 state.game_running = False
                 state.phase = STATE_VIEWING
                 state.is_spectator = False
@@ -209,17 +208,24 @@ def start_client():
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((HOST, PORT))
     
+    # Avviamo il listener
     threading.Thread(target=listen_from_server, args=(sock,), daemon=True).start()
+    
+    # AVVIAMO HEARTBEAT (Essenziale per non essere disconnessi)
+    threading.Thread(target=heartbeat_loop, args=(sock,), daemon=True).start()
+    
     send_json(sock, {"type": CMD_JOIN, "username": username})
 
     while True:
         try:
-            # Input bloccante dell'utente
+            # Attendiamo input utente
             user_input = input()
-            if not user_input: continue
+            
+            # --- FIX: Stop immediato del timer all'input ---
+            cli_timer.stop()
+            # -----------------------------------------------
 
-            # Se l'utente scrive qualcosa, fermiamo gli avvisi del timer (ha agito!)
-            cli_timer.stop() 
+            if not user_input: continue
 
             if user_input.lower() == "/quit": break
             if user_input.lower() == "/start":
