@@ -13,7 +13,7 @@ from common.protocol import *
 HOST = '127.0.0.1'
 PORT = 65432
 
-# Colori e Font (Dark Mode)
+# Colori
 BG_COLOR = "#2E3440"
 TEXT_BG = "#3B4252"
 FG_COLOR = "#D8DEE9"
@@ -52,6 +52,7 @@ class StoryClientGUI:
         self.game_running = False
         self.phase = STATE_VIEWING
         self.running = True
+        self.reconnecting = False # Flag per evitare loop doppi
         
         self.timer_left = 0
         self.timer_job = None
@@ -88,56 +89,90 @@ class StoryClientGUI:
         self.status_lbl = tk.Label(master, text="Non Connesso", bg="#252A34", fg="gray", font=("Consolas", 9), anchor=tk.W, padx=10, pady=5)
         self.status_lbl.pack(side=tk.BOTTOM, fill=tk.X)
 
-        self.master.after(100, self.connect_to_server)
+        self.master.after(100, self.initial_connect)
 
-    def connect_to_server(self):
+    def initial_connect(self):
         self.username = simpledialog.askstring("Login", "Inserisci Username:", parent=self.master)
         if not self.username:
             self.master.destroy()
             return
+        self.connect_to_server()
+
+    def connect_to_server(self):
         try:
+            if self.sock: self.sock.close()
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.settimeout(5) # Timeout per evitare blocchi
             self.sock.connect((HOST, PORT))
+            self.sock.settimeout(None) # Rimuovi timeout per operatività normale
             
-            # Avvio thread ascolto E thread heartbeat
+            self.running = True
+            self.reconnecting = False
+            
+            # Thread Ascolto e Heartbeat
             threading.Thread(target=self.listen_thread, daemon=True).start()
             threading.Thread(target=self.heartbeat_loop, daemon=True).start()
             
             send_json(self.sock, {"type": CMD_JOIN, "username": self.username})
             self.update_status(f"Connesso come: {self.username}")
+            self.log("[SISTEMA] Connessione stabilita.", "server")
+            self.enable_input()
+            
         except Exception as e:
-            messagebox.showerror("Errore", f"Impossibile connettersi.\n{e}")
-            self.master.destroy()
+            if not self.reconnecting:
+                # Se fallisce la prima connessione o durante riconnessione
+                self.handle_connection_loss()
+
+    def handle_connection_loss(self):
+        if self.reconnecting: return
+        self.reconnecting = True
+        self.running = False
+        
+        self.log("\n[!] Connessione persa. Tentativo riconnessione tra 3s...", "error")
+        self.status_lbl.config(fg=ERROR_COLOR, text="RICONNESSIONE IN CORSO...")
+        self.disable_input()
+        self.stop_timer()
+        
+        # Avvia thread di riconnessione
+        threading.Thread(target=self.reconnect_loop, daemon=True).start()
+
+    def reconnect_loop(self):
+        while self.reconnecting:
+            time.sleep(3)
+            try:
+                self.master.after(0, lambda: self.log("...", "info"))
+                # Tentativo connessione bloccante
+                temp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                temp_sock.settimeout(2)
+                temp_sock.connect((HOST, PORT))
+                temp_sock.close()
+                
+                # Se siamo qui, il server è su!
+                self.master.after(0, self.connect_to_server)
+                return
+            except:
+                pass # Server ancora giù, riprova al prossimo giro
 
     def listen_thread(self):
         while self.running:
             try:
                 msg = recv_json(self.sock)
-                if not msg: break
+                if not msg: raise Exception("Disconnesso")
                 self.master.after(0, self.process_incoming_message, msg)
-            except Exception: break
-        self.master.after(0, self.on_disconnect)
+            except:
+                if self.running: self.master.after(0, self.handle_connection_loss)
+                break
 
-    # --- NUOVO: LOOP HEARTBEAT ---
     def heartbeat_loop(self):
-        """Invia un segnale al server ogni 3 secondi."""
         while self.running:
             try:
                 time.sleep(3)
-                if self.sock:
-                    send_json(self.sock, {"type": CMD_HEARTBEAT})
-            except:
-                break # Se c'è errore (socket chiuso), esce dal loop
-    # -----------------------------
+                send_json(self.sock, {"type": CMD_HEARTBEAT})
+            except: break
 
-    def on_disconnect(self):
-        if self.running:
-            self.log("\n--- DISCONNESSO DAL SERVER ---", "error")
-            self.disable_input()
-            self.status_lbl.config(fg=ERROR_COLOR, text="DISCONNESSO")
-            self.stop_timer()
-            self.running = False
-
+    # --- TIMER, INPUT E MESSAGGI ---
+    # (Codice identico a prima, ma assicurati di copiare tutto il resto delle funzioni UI)
+    
     def start_timer(self, seconds):
         self.stop_timer()
         if seconds and seconds > 0:
@@ -172,6 +207,7 @@ class StoryClientGUI:
             self.log(f"Benvenuto, {self.username}.", "server")
             if self.is_leader: self.log(">>> SEI IL LEADER. Scrivi '/start'.", "highlight")
             self.update_status()
+
         elif msg_type == EVT_GAME_STARTED:
             self.game_running = True
             self.am_i_narrator = msg.get('am_i_narrator', False)
@@ -184,6 +220,7 @@ class StoryClientGUI:
             else: self.log("[RUOLO] SCRITTORE.", "info")
             self.update_status()
             self.disable_input()
+
         elif msg_type == EVT_NEW_SEGMENT:
             self.log(f"\n--- Segmento {msg.get('segment_id')} ---", "info")
             if self.is_spectator:
@@ -199,53 +236,71 @@ class StoryClientGUI:
                 self.log(">>> SCRIVI LA TUA PROPOSTA:", "highlight")
                 self.enable_input()
                 self.entry_field.focus()
+            self.update_status()
+
         elif msg_type == EVT_NARRATOR_DECISION_NEEDED:
             if self.am_i_narrator:
                 self.phase = STATE_DECIDING
                 proposals = msg.get('proposals')
-                self.log("\n*** SCEGLI ***", "narrator")
-                for p in proposals: self.log(f"[{p['id']}] {p['author']}: {p['text']}", "story")
+                self.log("\n*** TOCCA A TE SCEGLIERE ***", "narrator")
+                for p in proposals:
+                    self.log(f"[{p['id']}] {p['author']}: {p['text']}", "story")
                 self.enable_input()
                 self.entry_field.focus()
+                self.update_status()
+
         elif msg_type == EVT_STORY_UPDATE:
-            self.log("\nSTORIA AGGIORNATA:", "server")
+            self.log("\nAGGIORNAMENTO STORIA:", "server")
             for line in msg.get('story'): self.log(f"{line}", "story")
             self.disable_input()
+
         elif msg_type == EVT_ASK_CONTINUE:
             self.phase = STATE_DECIDING_CONTINUE
-            self.log("\nVuoi continuare? (C/F)", "highlight")
+            self.log("\nVuoi continuare la storia? (C/F)", "highlight")
             self.enable_input()
             self.entry_field.focus()
+            self.update_status()
+
         elif msg_type == EVT_GAME_ENDED:
             self.game_running = False
             self.phase = STATE_VOTING
             self.is_spectator = False 
-            self.log("\n=== FINE STORIA ===", "server")
-            self.log("Votazione: (S/N).", "highlight")
+            self.log("\n=== FINE DELLA STORIA ===", "server")
+            self.log("Votazione Riavvio: (S = Sì, N = No).", "highlight")
             self.enable_input()
             self.entry_field.focus()
+            self.update_status()
+
         elif msg_type == EVT_VOTE_UPDATE:
-            pass 
-            self.log(f"[VOTO] {msg.get('count')} / {msg.get('needed')}", "info")
+            self.log(f"[SISTEMA] Voti ricevuti: {msg.get('count')} / {msg.get('needed')}", "info")
+
         elif msg_type == EVT_RETURN_TO_LOBBY:
             self.game_running = False
             self.phase = STATE_VIEWING
             self.is_spectator = False
             self.am_i_narrator = False
             self.log("\n--- SEI IN LOBBY ---", "server")
-            if msg.get('msg'): self.log(f"MSG: {msg.get('msg')}", "error")
-            if self.is_leader: self.log("Leader: Scrivi '/start'.", "highlight"); self.enable_input()
-            else: self.log("Attendi il Leader...", "info"); self.disable_input()
+            if msg.get('msg'): self.log(f"ALERT: {msg.get('msg')}", "error")
+            if self.is_leader:
+                self.log("Leader: Scrivi '/start'.", "highlight")
+                self.enable_input()
+            else:
+                self.log("Attendi che il Leader avvii...", "info")
+                self.disable_input()
             self.update_status()
+
         elif msg_type == EVT_LEADER_UPDATE:
             self.is_leader = True
             self.log(f"\n[INFO] {msg.get('msg')}", "server")
             self.enable_input()
+            self.update_status()
+
         elif msg_type == EVT_GOODBYE:
              self.log(f"\n{msg.get('msg')}", "server")
              self.disable_input()
              self.running = False
              self.sock.close()
+
         elif msg_type == "ERROR":
             self.log(f"[ERRORE] {msg.get('msg')}", "error")
 
@@ -266,7 +321,8 @@ class StoryClientGUI:
             self.phase = STATE_WAITING
             self.log(f"Tu: {text}", "info")
             self.disable_input()
-            self.stop_timer()
+            self.stop_timer() 
+            self.update_status()
         elif self.phase == STATE_DECIDING and self.am_i_narrator:
             try:
                 pid = int(text)
@@ -275,11 +331,12 @@ class StoryClientGUI:
                 self.log(f"Scelta #{pid}.", "info")
                 self.disable_input()
                 self.stop_timer()
+                self.update_status()
             except: self.log("Numero non valido.", "error")
         elif self.phase == STATE_DECIDING_CONTINUE:
             t = text.upper()
-            if t == "C": send_json(self.sock, {"type": CMD_DECIDE_CONTINUE, "action": "CONTINUE"}); self.phase = STATE_VIEWING; self.disable_input(); self.stop_timer()
-            elif t == "F": send_json(self.sock, {"type": CMD_DECIDE_CONTINUE, "action": "STOP"}); self.phase = STATE_VIEWING; self.disable_input(); self.stop_timer()
+            if t == "C": send_json(self.sock, {"type": CMD_DECIDE_CONTINUE, "action": "CONTINUE"}); self.phase = STATE_VIEWING; self.disable_input(); self.stop_timer(); self.update_status()
+            elif t == "F": send_json(self.sock, {"type": CMD_DECIDE_CONTINUE, "action": "STOP"}); self.phase = STATE_VIEWING; self.disable_input(); self.stop_timer(); self.update_status()
             else: self.log("Usa 'C' o 'F'.", "error")
         elif self.phase == STATE_VOTING:
             t = text.upper()
@@ -287,7 +344,7 @@ class StoryClientGUI:
             elif t == "N": send_json(self.sock, {"type": CMD_VOTE_NO}); self.log("Voto NO.", "info"); self.stop_timer()
             else: self.log("Usa 'S' o 'N'.", "error")
         elif self.phase == STATE_VIEWING and not (self.is_leader and not self.game_running):
-             self.log("Non puoi scrivere.", "error")
+             self.log("Non puoi scrivere adesso.", "error")
 
     def log(self, text, tag=None):
         self.text_area.config(state='normal')

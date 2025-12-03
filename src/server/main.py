@@ -201,6 +201,13 @@ def handle_client(conn, addr):
 
             elif msg_type == CMD_SUBMIT:
                 text = msg.get('text')
+
+                # --- AGGIUNGI QUESTO BLOCCO DI TEST ---
+                if text == "CRASH_NOW":
+                    print("!!! SIMULAZIONE CRASH FATALE !!!")
+                    os._exit(1) # Uccide il processo Python istantaneamente
+                # --------------------------------------
+
                 success, result = game_state.add_proposal(user_id, text)
                 if success: check_round_completion()
                 else: send_json(conn, {"type": "ERROR", "msg": result})
