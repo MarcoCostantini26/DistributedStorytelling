@@ -239,12 +239,17 @@ def handle_client(conn, addr):
                 if user_id != game_state.narrator: continue
                 stop_timer()
                 action = msg.get('action')
+                
                 if action == "CONTINUE":
                     new_seg_id = game_state.start_new_segment()
                     send_to_all({"type": EVT_NEW_SEGMENT, "segment_id": new_seg_id, "timeout": TIME_PROPOSAL})
                     start_timer(TIME_PROPOSAL, on_proposal_timeout)
+                
                 elif action == "STOP":
                     print("Fine partita richiesta.")
+                    
+                    game_state.save_to_history()
+                    
                     send_to_all({"type": EVT_GAME_ENDED, "final_story": game_state.story, "timeout": TIME_VOTING})
                     game_state.is_running = False 
                     start_timer(TIME_VOTING, on_voting_timeout)

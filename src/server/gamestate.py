@@ -1,8 +1,10 @@
 import random
 import json
 import os
+from datetime import datetime
 
 SAVE_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'recovery.json'))
+HISTORY_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'history.json'))
 
 class GameState:
     def __init__(self):
@@ -197,3 +199,31 @@ class GameState:
         for p in self.active_proposals:
             if p['author'] == username: return True
         return False
+
+    def save_to_history(self):
+        """Salva la storia conclusa nell'archivio storico permanente."""
+        if not self.story: return
+
+        story_entry = {
+            "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "theme": self.current_theme,
+            "narrator": self.narrator_username,
+            "full_text": self.story
+        }
+
+        history_data = []
+        if os.path.exists(HISTORY_FILE):
+            try:
+                with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+                    history_data = json.load(f)
+            except Exception:
+                history_data = []
+
+        history_data.append(story_entry)
+
+        try:
+            with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
+                json.dump(history_data, f, indent=4)
+            print(f"[ARCHIVIO] Storia salvata in {HISTORY_FILE}")
+        except Exception as e:
+            print(f"[ERRORE] Impossibile salvare storico: {e}")

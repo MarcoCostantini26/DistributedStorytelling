@@ -163,7 +163,8 @@ class StoryClientGUI:
                 msg = recv_json(self.sock)
                 if not msg: break
                 self.master.after(0, self.process_incoming_message, msg)
-            except Exception: break
+            except Exception:
+                break
         self.master.after(0, self.on_disconnect)
 
     def on_disconnect(self):
@@ -185,7 +186,6 @@ class StoryClientGUI:
             self.timer_lbl.config(text="")
 
     def stop_timer(self):
-        """Ferma il timer e pulisce la label."""
         if self.timer_job:
             self.master.after_cancel(self.timer_job)
             self.timer_job = None
@@ -200,13 +200,12 @@ class StoryClientGUI:
             self.timer_lbl.config(text="Tempo scaduto!")
             self.timer_job = None
 
-    # --- MESSAGGI ---
+    # --- GESTIONE MESSAGGI ---
 
     def process_incoming_message(self, msg):
         msg_type = msg.get('type')
         timeout = msg.get('timeout', 0)
         
-        # Gestione timer automatica all'arrivo di nuovi messaggi
         if timeout: self.start_timer(timeout)
         else: self.stop_timer()
 
@@ -223,61 +222,69 @@ class StoryClientGUI:
             self.phase = STATE_VIEWING
             self.clear_screen()
             self.log(f"CAPITOLO 1: {msg.get('theme')}", "narrator")
-            if self.is_spectator: self.log("[INFO] Spettatore.", "info")
-            elif self.am_i_narrator: self.log("[RUOLO] NARRATORE.", "narrator")
-            else: self.log("[RUOLO] SCRITTORE.", "info")
+            self.log("-" * 40, "info")
+            if self.is_spectator: self.log("[INFO] Sei entrato come SPETTATORE.", "info")
+            elif self.am_i_narrator: self.log("[RUOLO] Sei il NARRATORE. Guida la storia.", "narrator")
+            else: self.log("[RUOLO] Sei uno SCRITTORE.", "info")
             self.update_status()
             self.disable_input()
 
         elif msg_type == EVT_NEW_SEGMENT:
             self.log(f"\n--- Segmento {msg.get('segment_id')} ---", "info")
+            
             if self.is_spectator:
                 self.phase = STATE_VIEWING
-                self.log("Attendi...", "info")
+                self.log("In attesa degli scrittori...", "info")
                 self.disable_input()
             elif self.am_i_narrator:
                 self.phase = STATE_VIEWING
-                self.log("Gli scrittori scrivono...", "info")
+                self.log("Gli scrittori stanno scrivendo...", "info")
                 self.disable_input()
             else:
                 self.phase = STATE_EDITING
                 self.log(">>> SCRIVI LA TUA PROPOSTA:", "highlight")
                 self.enable_input()
                 self.entry_field.focus()
+            
+            self.update_status() # <--- AGGIUNTO: Aggiorna lo stato in basso!
 
         elif msg_type == EVT_NARRATOR_DECISION_NEEDED:
             if self.am_i_narrator:
                 self.phase = STATE_DECIDING
                 proposals = msg.get('proposals')
-                self.log("\n*** SCEGLI LA PROPOSTA MIGLIORE ***", "narrator")
-                for p in proposals: self.log(f"[{p['id']}] {p['author']}: {p['text']}", "story")
+                self.log("\n*** TOCCA A TE SCEGLIERE ***", "narrator")
+                for p in proposals:
+                    self.log(f"[{p['id']}] {p['author']}: {p['text']}", "story")
                 self.enable_input()
                 self.entry_field.focus()
+                self.update_status() # <--- AGGIUNTO
 
         elif msg_type == EVT_STORY_UPDATE:
             self.log("\nAGGIORNAMENTO STORIA:", "server")
-            for line in msg.get('story'): self.log(f"{line}", "story")
+            for line in msg.get('story'):
+                self.log(f"{line}", "story")
             self.disable_input()
 
         elif msg_type == EVT_ASK_CONTINUE:
             self.phase = STATE_DECIDING_CONTINUE
-            self.log("\nVuoi continuare? (C/F)", "highlight")
+            self.log("\nVuoi continuare la storia? (C/F)", "highlight")
             self.enable_input()
             self.entry_field.focus()
+            self.update_status() # <--- AGGIUNTO
 
         elif msg_type == EVT_GAME_ENDED:
             self.game_running = False
             self.phase = STATE_VOTING
             self.is_spectator = False 
-            self.log("\n=== FINE STORIA ===", "server")
-            self.log("Votazione: (S = Sì, N = No).", "highlight")
+            self.log("\n=== FINE DELLA STORIA ===", "server")
+            self.log("Votazione Riavvio: (S = Sì, N = No).", "highlight")
             self.enable_input()
             self.entry_field.focus()
+            self.update_status() # <--- AGGIUNTO
 
         elif msg_type == EVT_VOTE_UPDATE:
-            # Qui NON stoppiamo il timer perché è un aggiornamento intermedio
             pass 
-            self.log(f"[VOTO] {msg.get('count')} / {msg.get('needed')}", "info")
+            self.log(f"[SISTEMA] Voti ricevuti: {msg.get('count')} / {msg.get('needed')}", "info")
 
         elif msg_type == EVT_RETURN_TO_LOBBY:
             self.game_running = False
@@ -285,12 +292,12 @@ class StoryClientGUI:
             self.is_spectator = False
             self.am_i_narrator = False
             self.log("\n--- SEI IN LOBBY ---", "server")
-            if msg.get('msg'): self.log(f"MSG: {msg.get('msg')}", "error")
+            if msg.get('msg'): self.log(f"ALERT: {msg.get('msg')}", "error")
             if self.is_leader:
-                self.log("Leader: Scrivi '/start'.", "highlight")
+                self.log("Leader: Scrivi '/start' per una nuova partita.", "highlight")
                 self.enable_input()
             else:
-                self.log("Attendi il Leader...", "info")
+                self.log("Attendi che il Leader avvii...", "info")
                 self.disable_input()
             self.update_status()
 
@@ -298,6 +305,7 @@ class StoryClientGUI:
             self.is_leader = True
             self.log(f"\n[INFO] {msg.get('msg')}", "server")
             self.enable_input()
+            self.update_status() # <--- AGGIUNTO
 
         elif msg_type == EVT_GOODBYE:
              self.log(f"\n{msg.get('msg')}", "server")
@@ -325,13 +333,13 @@ class StoryClientGUI:
             else: self.log("Non puoi avviare ora.", "error")
             return
 
-        # LOGICA GIOCO + STOP TIMER
         if self.phase == STATE_EDITING:
             send_json(self.sock, {"type": CMD_SUBMIT, "text": text})
             self.phase = STATE_WAITING
             self.log(f"Tu: {text}", "info")
             self.disable_input()
-            self.stop_timer() # <--- FIX: Ferma timer grafico
+            self.stop_timer() 
+            self.update_status() # <--- AGGIUNTO (Aggiorna a WAITING)
 
         elif self.phase == STATE_DECIDING and self.am_i_narrator:
             try:
@@ -340,7 +348,8 @@ class StoryClientGUI:
                 self.phase = STATE_VIEWING
                 self.log(f"Scelta proposta #{pid}.", "info")
                 self.disable_input()
-                self.stop_timer() # <--- FIX
+                self.stop_timer()
+                self.update_status() # <--- AGGIUNTO (Torna a VIEWING)
             except: self.log("Numero non valido.", "error")
 
         elif self.phase == STATE_DECIDING_CONTINUE:
@@ -349,12 +358,14 @@ class StoryClientGUI:
                 send_json(self.sock, {"type": CMD_DECIDE_CONTINUE, "action": "CONTINUE"})
                 self.phase = STATE_VIEWING
                 self.disable_input()
-                self.stop_timer() # <--- FIX
+                self.stop_timer()
+                self.update_status() # <--- AGGIUNTO
             elif t == "F":
                 send_json(self.sock, {"type": CMD_DECIDE_CONTINUE, "action": "STOP"})
                 self.phase = STATE_VIEWING
                 self.disable_input()
-                self.stop_timer() # <--- FIX
+                self.stop_timer()
+                self.update_status() # <--- AGGIUNTO
             else:
                 self.log("Usa 'C' o 'F'.", "error")
 
@@ -363,16 +374,18 @@ class StoryClientGUI:
             if t == "S":
                 send_json(self.sock, {"type": CMD_VOTE_RESTART})
                 self.log("Hai votato SÌ.", "info")
-                self.stop_timer() # <--- FIX
+                self.stop_timer()
+                # Non cambiamo fase qui, aspettiamo il server, ma se vuoi puoi aggiornare status
             elif t == "N":
                 send_json(self.sock, {"type": CMD_VOTE_NO})
                 self.log("Hai votato NO.", "info")
-                self.stop_timer() # <--- FIX
+                self.stop_timer()
             else:
                 self.log("Usa 'S' o 'N'.", "error")
 
-        elif self.phase == STATE_VIEWING and not (self.is_leader and not self.game_running):
-             self.log("Non puoi scrivere adesso.", "error")
+        elif self.phase == STATE_VIEWING:
+             if not (self.is_leader and not self.game_running):
+                 self.log("Non puoi scrivere adesso.", "error")
 
     def log(self, text, tag=None):
         self.text_area.config(state='normal')
