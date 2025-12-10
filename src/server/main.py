@@ -16,13 +16,12 @@ PORT = 65432
 TIME_PROPOSAL = 60
 TIME_SELECTION = 30
 TIME_VOTING = 30
-HEARTBEAT_TIMEOUT = 8  # Secondi dopo i quali il client è considerato morto
+HEARTBEAT_TIMEOUT = 8
 
 game_state = GameState()
 active_connections = {} 
-last_active = {} # Map[addr, timestamp] - Ultima volta che abbiamo sentito il client
+last_active = {} 
 lock = threading.RLock()
-
 game_timer = None 
 
 def send_to_all(msg):
@@ -31,7 +30,7 @@ def send_to_all(msg):
             try: send_json(sock, msg)
             except: pass
 
-# --- TIMER GIOCO ---
+# --- TIMER ---
 def start_timer(duration, callback):
     global game_timer
     stop_timer() 
@@ -45,29 +44,24 @@ def stop_timer():
         game_timer.cancel()
         game_timer = None
 
-# --- MONITOR HEARTBEAT (Nuovo) ---
+# --- MONITOR HEARTBEAT ---
 def monitor_connections():
-    """Controlla periodicamente se i client sono vivi."""
     while True:
-        time.sleep(2) # Controlla ogni 2 secondi
+        time.sleep(2)
         now = time.time()
         to_kick = []
-
         with lock:
             for addr, last_time in last_active.items():
                 if now - last_time > HEARTBEAT_TIMEOUT:
-                    print(f"[HEARTBEAT] Client {addr} andato in timeout (>{HEARTBEAT_TIMEOUT}s). Disconnessione.")
+                    print(f"[HEARTBEAT] Client {addr} timeout. Disconnessione.")
                     to_kick.append(addr)
-            
-            # Disconnettiamo i morti (chiudendo il socket, il thread handle_client gestirà il resto)
             for addr in to_kick:
                 sock = active_connections.get(addr)
                 if sock:
-                    try: sock.close() # Questo farà crashare handle_client, attivando la logica di uscita
+                    try: sock.close()
                     except: pass
 
-# --- CALLBACK TIMEOUT GIOCO ---
-
+# --- TIMEOUT CALLBACKS ---
 def on_proposal_timeout():
     with lock:
         if not game_state.is_running: return
@@ -97,7 +91,6 @@ def on_voting_timeout():
         process_vote_check(force_end=True)
 
 # --- FLUSSO ---
-
 def check_round_completion():
     active_writers = game_state.count_active_writers()
     current_props = len(game_state.active_proposals)
@@ -117,17 +110,27 @@ def process_vote_check(force_end=False):
     if (total_voted >= total_connected and total_connected > 0) or force_end:
         stop_timer()
         game_state.is_running = False
+        
+        # NOTA: Qui NON salviamo più la history per evitare duplicati. 
+        # Lo abbiamo fatto in CMD_DECIDE_CONTINUE -> STOP.
+
         users_leaving = []
         all_users = list(game_state.players.keys())
+        
         with lock:
             for user_id in all_users:
                 if user_id in game_state.player_votes and not game_state.player_votes[user_id]:
+                    # Voto NO
                     sock = active_connections.get(user_id)
-                    if sock: send_json(sock, {"type": EVT_GOODBYE, "msg": "Arrivederci!"})
+                    if sock: 
+                        send_json(sock, {"type": EVT_GOODBYE, "msg": "Grazie per aver giocato! Arrivederci."})
                     users_leaving.append(user_id)
                 else:
+                    # Voto SI / Timeout
                     sock = active_connections.get(user_id)
                     if sock: send_json(sock, {"type": EVT_RETURN_TO_LOBBY})
+
+        time.sleep(0.2) 
 
         for uid in users_leaving:
             with lock:
@@ -135,14 +138,27 @@ def process_vote_check(force_end=False):
                     try: active_connections[uid].close()
                     except: pass
                     del active_connections[uid]
-            game_state.remove_player(uid)
+            
+            # Recupera nuovo leader
+            new_leader_addr = game_state.remove_player(uid) 
+            
+            # Notifica nuovo leader
+            if new_leader_addr:
+                with lock:
+                    if new_leader_addr in active_connections:
+                        print(f"[LEADER] Passaggio consegne a {new_leader_addr}")
+                        send_json(active_connections[new_leader_addr], {
+                            "type": EVT_LEADER_UPDATE, 
+                            "msg": "Il precedente Leader ha lasciato. Ora sei tu il Leader!"
+                        })
+        
         game_state.player_votes.clear()
 
 def handle_client(conn, addr):
     print(f"Nuova connessione da {addr}")
     with lock:
         active_connections[addr] = conn
-        last_active[addr] = time.time() # Inizializza timer heartbeat
+        last_active[addr] = time.time()
     
     user_id = addr
     
@@ -151,13 +167,9 @@ def handle_client(conn, addr):
             msg = recv_json(conn)
             if not msg: break
             
-            # --- AGGIORNA HEARTBEAT ---
             with lock: last_active[addr] = time.time()
-            # --------------------------
-
             msg_type = msg.get('type')
             
-            # Se è solo un heartbeat, ignoriamo il resto della logica
             if msg_type == CMD_HEARTBEAT:
                 continue
 
@@ -201,13 +213,7 @@ def handle_client(conn, addr):
 
             elif msg_type == CMD_SUBMIT:
                 text = msg.get('text')
-
-                # --- AGGIUNGI QUESTO BLOCCO DI TEST ---
-                if text == "CRASH_NOW":
-                    print("!!! SIMULAZIONE CRASH FATALE !!!")
-                    os._exit(1) # Uccide il processo Python istantaneamente
-                # --------------------------------------
-
+                if text == "CRASH_NOW": os._exit(1)
                 success, result = game_state.add_proposal(user_id, text)
                 if success: check_round_completion()
                 else: send_json(conn, {"type": "ERROR", "msg": result})
@@ -220,7 +226,6 @@ def handle_client(conn, addr):
                 if success:
                     send_to_all({"type": EVT_STORY_UPDATE, "story": new_story})
                     send_json(conn, {"type": EVT_ASK_CONTINUE, "timeout": 15})
-                    
                     def auto_continue():
                         with lock:
                             if not game_state.is_running: return
@@ -239,8 +244,13 @@ def handle_client(conn, addr):
                     send_to_all({"type": EVT_NEW_SEGMENT, "segment_id": new_seg_id, "timeout": TIME_PROPOSAL})
                     start_timer(TIME_PROPOSAL, on_proposal_timeout)
                 elif action == "STOP":
-                    send_to_all({"type": EVT_GAME_ENDED, "final_story": game_state.story, "timeout": TIME_VOTING})
+                    # SALVATAGGIO UNICO QUI
+                    print("[SERVER] Storia conclusa. Salvataggio history...")
+                    game_state.save_to_history()
                     game_state.is_running = False 
+                    game_state.save_state() # Pulisce recovery
+
+                    send_to_all({"type": EVT_GAME_ENDED, "final_story": game_state.story, "timeout": TIME_VOTING})
                     start_timer(TIME_VOTING, on_voting_timeout)
 
             elif msg_type == CMD_VOTE_RESTART:
@@ -251,11 +261,11 @@ def handle_client(conn, addr):
                 process_vote_check()
 
     except Exception:
-        pass # Disconnessione gestita nel finally
+        pass 
     finally:
         with lock:
             if addr in active_connections: del active_connections[addr]
-            if addr in last_active: del last_active[addr] # Pulizia heartbeat
+            if addr in last_active: del last_active[addr]
         
         if game_state.is_running and user_id == game_state.narrator:
             print("[ALERT] Narratore disconnesso.")
@@ -280,7 +290,6 @@ def start_server():
     server.listen()
     print(f"[SERVER] In ascolto su {HOST}:{PORT}")
     
-    # AVVIO THREAD MONITORAGGIO HEARTBEAT
     threading.Thread(target=monitor_connections, daemon=True).start()
     
     while True:

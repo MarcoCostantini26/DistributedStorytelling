@@ -51,6 +51,7 @@ class ClientState:
         self.is_spectator = False
         self.game_running = False
         self.phase = STATE_VIEWING
+        self.intentional_exit = False 
 
 state = ClientState()
 cli_timer = InputTimer()
@@ -73,8 +74,6 @@ def listen_from_server(sock_ref):
             msg = recv_json(sock_ref)
             if not msg: raise Exception("Server closed")
             
-            # (Codice gestione messaggi identico a prima...)
-            # Per brevità copio solo la logica base, il resto è uguale
             msg_type = msg.get('type')
             timeout = msg.get('timeout', 0)
             cli_timer.stop()
@@ -151,6 +150,7 @@ def listen_from_server(sock_ref):
             elif msg_type == EVT_GOODBYE:
                 cli_timer.stop()
                 print(f"\n[SERVER] {msg.get('msg')}")
+                state.intentional_exit = True
                 os._exit(0)
 
             elif msg_type == EVT_WELCOME:
@@ -159,6 +159,9 @@ def listen_from_server(sock_ref):
                 if state.is_leader: print("Digita '/start'.")
 
         except:
+            if state.intentional_exit:
+                break
+            
             print("\n[!] Connessione persa. Riconnessione in corso...", flush=True)
             reconnect_loop(username_cache)
             break
@@ -178,7 +181,8 @@ def reconnect_loop(username):
             sock = new_sock
             print("[INFO] Riconnesso al server!", flush=True)
             
-            # Rilancia i thread
+            state.intentional_exit = False
+            
             threading.Thread(target=listen_from_server, args=(sock,), daemon=True).start()
             threading.Thread(target=heartbeat_loop, args=(sock,), daemon=True).start()
             
@@ -244,7 +248,6 @@ def start_client():
 
             except (BrokenPipeError, ConnectionResetError):
                 print("[!] Errore invio. Riconnessione...", flush=True)
-                # Il listener gestirà il reconnect
                 time.sleep(1)
 
         except: break

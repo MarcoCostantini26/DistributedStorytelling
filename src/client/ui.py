@@ -52,7 +52,8 @@ class StoryClientGUI:
         self.game_running = False
         self.phase = STATE_VIEWING
         self.running = True
-        self.reconnecting = False # Flag per evitare loop doppi
+        self.reconnecting = False 
+        self.intentional_exit = False 
         
         self.timer_left = 0
         self.timer_job = None
@@ -102,14 +103,14 @@ class StoryClientGUI:
         try:
             if self.sock: self.sock.close()
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.settimeout(5) # Timeout per evitare blocchi
+            self.sock.settimeout(5)
             self.sock.connect((HOST, PORT))
-            self.sock.settimeout(None) # Rimuovi timeout per operatività normale
+            self.sock.settimeout(None)
             
             self.running = True
             self.reconnecting = False
+            self.intentional_exit = False
             
-            # Thread Ascolto e Heartbeat
             threading.Thread(target=self.listen_thread, daemon=True).start()
             threading.Thread(target=self.heartbeat_loop, daemon=True).start()
             
@@ -120,10 +121,10 @@ class StoryClientGUI:
             
         except Exception as e:
             if not self.reconnecting:
-                # Se fallisce la prima connessione o durante riconnessione
                 self.handle_connection_loss()
 
     def handle_connection_loss(self):
+        if self.intentional_exit: return 
         if self.reconnecting: return
         self.reconnecting = True
         self.running = False
@@ -133,7 +134,6 @@ class StoryClientGUI:
         self.disable_input()
         self.stop_timer()
         
-        # Avvia thread di riconnessione
         threading.Thread(target=self.reconnect_loop, daemon=True).start()
 
     def reconnect_loop(self):
@@ -141,17 +141,14 @@ class StoryClientGUI:
             time.sleep(3)
             try:
                 self.master.after(0, lambda: self.log("...", "info"))
-                # Tentativo connessione bloccante
                 temp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 temp_sock.settimeout(2)
                 temp_sock.connect((HOST, PORT))
                 temp_sock.close()
-                
-                # Se siamo qui, il server è su!
                 self.master.after(0, self.connect_to_server)
                 return
             except:
-                pass # Server ancora giù, riprova al prossimo giro
+                pass 
 
     def listen_thread(self):
         while self.running:
@@ -160,6 +157,7 @@ class StoryClientGUI:
                 if not msg: raise Exception("Disconnesso")
                 self.master.after(0, self.process_incoming_message, msg)
             except:
+                if self.intentional_exit: break
                 if self.running: self.master.after(0, self.handle_connection_loss)
                 break
 
@@ -170,9 +168,6 @@ class StoryClientGUI:
                 send_json(self.sock, {"type": CMD_HEARTBEAT})
             except: break
 
-    # --- TIMER, INPUT E MESSAGGI ---
-    # (Codice identico a prima, ma assicurati di copiare tutto il resto delle funzioni UI)
-    
     def start_timer(self, seconds):
         self.stop_timer()
         if seconds and seconds > 0:
@@ -298,8 +293,12 @@ class StoryClientGUI:
         elif msg_type == EVT_GOODBYE:
              self.log(f"\n{msg.get('msg')}", "server")
              self.disable_input()
+             self.intentional_exit = True
              self.running = False
-             self.sock.close()
+             if self.sock: 
+                 try: self.sock.close()
+                 except: pass
+             self.master.after(2000, self.master.destroy)
 
         elif msg_type == "ERROR":
             self.log(f"[ERRORE] {msg.get('msg')}", "error")
@@ -310,7 +309,11 @@ class StoryClientGUI:
         if not text: return
         self.entry_field.delete(0, tk.END)
 
-        if text.lower() == "/quit": self.master.destroy(); return
+        if text.lower() == "/quit": 
+            self.intentional_exit = True
+            self.master.destroy()
+            return
+
         if text.lower() == "/start":
             if self.is_leader and not self.game_running: send_json(self.sock, {"type": CMD_START_GAME})
             else: self.log("Non puoi avviare.", "error")

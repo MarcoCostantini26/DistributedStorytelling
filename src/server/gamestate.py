@@ -3,17 +3,22 @@ import json
 import os
 from datetime import datetime
 
-SAVE_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'recovery.json'))
-HISTORY_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'history.json'))
+# Percorsi assoluti per evitare errori nei test o esecuzioni da cartelle diverse
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, '..', '..', 'data')
+SAVE_FILE = os.path.join(DATA_DIR, 'recovery.json')
+HISTORY_FILE = os.path.join(DATA_DIR, 'history.json')
+THEMES_FILE = os.path.join(DATA_DIR, 'themes.json')
 
 class GameState:
-    def __init__(self):
-        self.players = {}           # Map[addr, username] (Solo chi è connesso ORA)
-        self.story_usernames = []   # Whitelist: Nomi di chi ha iniziato la partita
+    def __init__(self, persistence=True):
+        self.persistence = persistence
+        self.players = {}           # Map[addr, username]
+        self.story_usernames = []   # Whitelist
         self.player_votes = {}      
-        self.leader = None          # Indirizzo del leader
-        self.narrator = None        # Indirizzo del narratore
-        self.narrator_username = None # NUOVO: Serve per riconoscerlo dopo il crash
+        self.leader = None          
+        self.narrator = None        
+        self.narrator_username = None 
         self.story = []       
         self.current_theme = "" 
         self.active_proposals = [] 
@@ -23,24 +28,25 @@ class GameState:
         
         self._load_themes()
         
-        # TENTATIVO DI RIPRISTINO STATO
-        self.load_state()
+        # Carica solo se la persistenza è attiva
+        if self.persistence:
+            self.load_state()
 
     def _load_themes(self):
         try:
-            theme_path = os.path.join(os.path.dirname(SAVE_FILE), 'themes.json')
-            with open(theme_path, 'r', encoding='utf-8') as f:
+            with open(THEMES_FILE, 'r', encoding='utf-8') as f:
                 self.available_themes = json.load(f)
         except Exception:
             self.available_themes = ["Tema Default"]
 
-    # --- PERSISTENZA ---
     def save_state(self):
-        """Salva lo stato corrente su file JSON."""
+        """Salva lo stato su file o lo cancella se la partita è finita."""
+        if not self.persistence: return
+
         if not self.is_running:
-            # Se la partita non corre, cancelliamo il file di recovery
             if os.path.exists(SAVE_FILE):
-                os.remove(SAVE_FILE)
+                try: os.remove(SAVE_FILE)
+                except: pass
             return
 
         data = {
@@ -53,16 +59,14 @@ class GameState:
             "is_running": self.is_running
         }
         try:
+            os.makedirs(DATA_DIR, exist_ok=True)
             with open(SAVE_FILE, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=4)
-            print("[PERSISTENZA] Stato salvato.")
         except Exception as e:
             print(f"[ERRORE] Salvataggio fallito: {e}")
 
     def load_state(self):
-        """Carica lo stato se esiste un file di recovery."""
-        if not os.path.exists(SAVE_FILE):
-            return
+        if not os.path.exists(SAVE_FILE): return
 
         try:
             with open(SAVE_FILE, 'r', encoding='utf-8') as f:
@@ -86,8 +90,6 @@ class GameState:
             self.leader = addr
         self.players[addr] = clean_name
         
-        # SE STIAMO RECUPERANDO DA UN CRASH:
-        # Dobbiamo ricollegare l'indirizzo IP al ruolo logico
         if self.is_running and clean_name == self.narrator_username:
             self.narrator = addr
             print(f"[RECOVERY] Il Narratore {clean_name} è tornato!")
@@ -108,11 +110,9 @@ class GameState:
             if addr in self.player_votes:
                 del self.player_votes[addr]
             
-            # Nota: Non cancelliamo il narratore da narrator_username, 
-            # perché ci serve per riconoscerlo se rientra.
             if addr == self.narrator:
-                self.narrator = None # Disconnesso fisicamente
-                print(f"[INFO] Narratore {username} disconnesso (Socket perso).")
+                self.narrator = None 
+                print(f"[INFO] Narratore {username} disconnesso.")
             else:
                 print(f"[INFO] {username} si è disconnesso.")
         
@@ -125,9 +125,8 @@ class GameState:
         self.is_running = True
         self.story_usernames = list(self.players.values())
         
-        # Scelta Narratore
         self.narrator = random.choice(list(self.players.keys()))
-        self.narrator_username = self.players[self.narrator] # Salviamo il nome per il crash
+        self.narrator_username = self.players[self.narrator]
         
         if self.available_themes: self.current_theme = random.choice(self.available_themes)
         else: self.current_theme = "Tema misterioso"
@@ -135,7 +134,7 @@ class GameState:
         self.story = []
         self.current_segment_id = 0
         
-        self.save_state() # SAVE
+        self.save_state()
         return True, {
             "narrator_id": self.narrator, 
             "narrator_name": self.narrator_username,
@@ -145,11 +144,10 @@ class GameState:
     def start_new_segment(self):
         self.current_segment_id += 1
         self.active_proposals = []
-        self.save_state() # SAVE
+        self.save_state()
         return self.current_segment_id
 
     def add_proposal(self, user_id, text):
-        # Controllo robusto: se il narratore non è connesso fisicamente, usiamo il nome
         current_user_name = self.players.get(user_id)
         
         if current_user_name == self.narrator_username:
@@ -164,7 +162,7 @@ class GameState:
             "text": text
         }
         self.active_proposals.append(proposal)
-        self.save_state() # SAVE
+        self.save_state()
         return True, proposal
 
     def select_proposal(self, proposal_id):
@@ -172,7 +170,7 @@ class GameState:
         if selected:
             self.story.append(selected['text'])
             self.active_proposals = []
-            self.save_state() # SAVE
+            self.save_state()
             return True, self.story
         return False, None
 
@@ -181,7 +179,7 @@ class GameState:
         self.active_proposals = []
         self.player_votes.clear()
         self.story_usernames = []
-        self.save_state() # Questo cancellerà il file o salverà is_running=False
+        self.save_state()
         print("[GAMESTATE] Partita resettata.")
 
     def register_vote(self, user_id, is_yes):
@@ -201,7 +199,6 @@ class GameState:
         return False
 
     def save_to_history(self):
-        """Salva la storia conclusa nell'archivio storico permanente."""
         if not self.story: return
 
         story_entry = {
@@ -222,6 +219,7 @@ class GameState:
         history_data.append(story_entry)
 
         try:
+            os.makedirs(DATA_DIR, exist_ok=True)
             with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
                 json.dump(history_data, f, indent=4)
             print(f"[ARCHIVIO] Storia salvata in {HISTORY_FILE}")
