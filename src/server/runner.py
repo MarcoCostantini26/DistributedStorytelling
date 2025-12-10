@@ -10,23 +10,19 @@ def run_server():
     print("--- [WATCHDOG] Avvio del Server Storytelling ---")
     while True:
         try:
-            # Avvia il server come sottoprocesso
-            # sys.executable assicura che usiamo lo stesso interprete python corrente
+            # Avvia il server come sottoprocesso usando lo stesso interprete Python
             process = subprocess.Popen([sys.executable, SERVER_SCRIPT])
             
             # Aspetta che il processo finisca (o crasci)
             process.wait()
             
-            # Se siamo qui, il server è terminato/crashato
             exit_code = process.returncode
-            print(f"--- [WATCHDOG] ATTENZIONE: Il server è terminato con codice {exit_code} ---")
+            print(f"--- [WATCHDOG] Il server è terminato con codice {exit_code} ---")
             
             if exit_code == 0:
-                # Se il codice è 0, significa che è stato chiuso volontariamente (es. manutenzione)
                 print("--- [WATCHDOG] Chiusura volontaria. Arresto watchdog.")
                 break
             else:
-                # Se il codice è diverso da 0, è un crash. Riavvio!
                 print("--- [WATCHDOG] Rilevato CRASH. Riavvio automatico tra 3 secondi... ---")
                 time.sleep(3)
                 
@@ -36,7 +32,7 @@ def run_server():
                 process.terminate()
             break
         except Exception as e:
-            print(f"--- [WATCHDOG] Errore critico nel runner: {e}")
+            print(f"--- [WATCHDOG] Errore critico: {e}")
             break
 
 if __name__ == "__main__":
