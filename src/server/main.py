@@ -12,12 +12,13 @@ from gamestate import GameState
 HOST = '127.0.0.1'
 PORT = 65432
 
-# --- CONFIGURAZIONE ---
+# --- CONFIGURAZIONE TEMPI ---
 TIME_PROPOSAL = 60
 TIME_SELECTION = 30
 TIME_VOTING = 30
 HEARTBEAT_TIMEOUT = 8
 
+# Inizializzazione stato
 game_state = GameState()
 active_connections = {} 
 last_active = {} 
@@ -30,7 +31,7 @@ def send_to_all(msg):
             try: send_json(sock, msg)
             except: pass
 
-# --- TIMER ---
+# --- GESTIONE TIMER ---
 def start_timer(duration, callback):
     global game_timer
     stop_timer() 
@@ -61,26 +62,46 @@ def monitor_connections():
                     try: sock.close()
                     except: pass
 
-# --- TIMEOUT CALLBACKS ---
+# --- CALLBACK TIMEOUT ---
 def on_proposal_timeout():
+    """Scatta quando scade il tempo per scrivere."""
     with lock:
         if not game_state.is_running: return
         print("[TIMEOUT] Tempo scrittura scaduto.")
+        
+        # --- MODIFICA FONDAMENTALE ---
+        # Chiudiamo la porta: cambiamo fase in SELECTING.
+        # Qualsiasi messaggio arrivi dopo questo istante verrà rifiutato da GameState.
+        game_state.phase = "SELECTING"
+        game_state.save_state()
+        # -----------------------------
+
         if not game_state.active_proposals:
             game_state.active_proposals.append({"id": 0, "author": "System", "text": "..."})
-        decision_msg = {"type": EVT_NARRATOR_DECISION_NEEDED, "proposals": game_state.active_proposals, "timeout": TIME_SELECTION}
+            
+        decision_msg = {
+            "type": EVT_NARRATOR_DECISION_NEEDED, 
+            "proposals": game_state.active_proposals, 
+            "timeout": TIME_SELECTION
+        }
+        
         if game_state.narrator in active_connections:
             send_json(active_connections[game_state.narrator], decision_msg)
+            
         start_timer(TIME_SELECTION, on_narrator_timeout)
 
 def on_narrator_timeout():
+    """Scatta quando il narratore non sceglie in tempo."""
     with lock:
         if not game_state.is_running: return
         print("[TIMEOUT] Narratore assente. Auto-scelta.")
+        
         if game_state.active_proposals:
             random_prop = random.choice(game_state.active_proposals)
             game_state.select_proposal(random_prop['id'])
             send_to_all({"type": EVT_STORY_UPDATE, "story": game_state.story})
+            
+            # Avvia nuovo segmento (resetta fase a WRITING dentro gamestate)
             new_seg_id = game_state.start_new_segment()
             send_to_all({"type": EVT_NEW_SEGMENT, "segment_id": new_seg_id, "timeout": TIME_PROPOSAL})
             start_timer(TIME_PROPOSAL, on_proposal_timeout)
@@ -90,16 +111,33 @@ def on_voting_timeout():
         print("[TIMEOUT] Voto scaduto.")
         process_vote_check(force_end=True)
 
-# --- FLUSSO ---
+# --- FLUSSO DI GIOCO ---
 def check_round_completion():
+    """Controlla se tutti gli scrittori hanno inviato la proposta."""
     active_writers = game_state.count_active_writers()
     current_props = len(game_state.active_proposals)
+    
+    # Se tutti hanno risposto (e c'è almeno uno scrittore)
     if current_props >= active_writers and active_writers > 0:
         stop_timer() 
-        decision_msg = {"type": EVT_NARRATOR_DECISION_NEEDED, "proposals": game_state.active_proposals, "timeout": TIME_SELECTION}
+        
+        # --- MODIFICA FONDAMENTALE ---
+        # Blocchiamo subito la fase, così nessuno può mandare doppi invii 
+        # o invii last-minute mentre processiamo.
+        game_state.phase = "SELECTING"
+        game_state.save_state()
+        # -----------------------------
+        
+        decision_msg = {
+            "type": EVT_NARRATOR_DECISION_NEEDED, 
+            "proposals": game_state.active_proposals, 
+            "timeout": TIME_SELECTION
+        }
+        
         with lock:
             if game_state.narrator in active_connections:
                 send_json(active_connections[game_state.narrator], decision_msg)
+        
         start_timer(TIME_SELECTION, on_narrator_timeout)
 
 def process_vote_check(force_end=False):
@@ -111,22 +149,19 @@ def process_vote_check(force_end=False):
         stop_timer()
         game_state.is_running = False
         
-        # NOTA: Qui NON salviamo più la history per evitare duplicati. 
-        # Lo abbiamo fatto in CMD_DECIDE_CONTINUE -> STOP.
-
         users_leaving = []
         all_users = list(game_state.players.keys())
         
         with lock:
             for user_id in all_users:
+                # Se ha votato NO (False)
                 if user_id in game_state.player_votes and not game_state.player_votes[user_id]:
-                    # Voto NO
                     sock = active_connections.get(user_id)
                     if sock: 
                         send_json(sock, {"type": EVT_GOODBYE, "msg": "Grazie per aver giocato! Arrivederci."})
                     users_leaving.append(user_id)
                 else:
-                    # Voto SI / Timeout
+                    # Voto SI o Timeout (default resta)
                     sock = active_connections.get(user_id)
                     if sock: send_json(sock, {"type": EVT_RETURN_TO_LOBBY})
 
@@ -139,10 +174,8 @@ def process_vote_check(force_end=False):
                     except: pass
                     del active_connections[uid]
             
-            # Recupera nuovo leader
             new_leader_addr = game_state.remove_player(uid) 
             
-            # Notifica nuovo leader
             if new_leader_addr:
                 with lock:
                     if new_leader_addr in active_connections:
@@ -153,6 +186,8 @@ def process_vote_check(force_end=False):
                         })
         
         game_state.player_votes.clear()
+        game_state.phase = "LOBBY" # Reset fase alla fine
+        game_state.save_state()
 
 def handle_client(conn, addr):
     print(f"Nuova connessione da {addr}")
@@ -179,15 +214,25 @@ def handle_client(conn, addr):
                 is_leader = (game_state.leader == user_id)
                 send_json(conn, {"type": EVT_WELCOME, "msg": f"Benvenuto {username}!", "is_leader": is_leader})
 
+                # Logica riconnessione
                 if game_state.is_running:
                     if username in game_state.story_usernames:
                         narrator_name = game_state.players.get(game_state.narrator, "???")
                         am_i_narrator = (game_state.narrator == user_id)
-                        send_json(conn, {"type": EVT_GAME_STARTED, "narrator": narrator_name, "theme": game_state.current_theme, "am_i_narrator": am_i_narrator, "is_spectator": False})
+                        send_json(conn, {
+                            "type": EVT_GAME_STARTED, 
+                            "narrator": narrator_name, 
+                            "theme": game_state.current_theme, 
+                            "am_i_narrator": am_i_narrator, 
+                            "is_spectator": False
+                        })
                         send_json(conn, {"type": EVT_STORY_UPDATE, "story": game_state.story})
-                        if not am_i_narrator and not game_state.has_user_submitted(username):
+                        
+                        # Se deve ancora scrivere e siamo nella fase giusta
+                        if not am_i_narrator and not game_state.has_user_submitted(username) and game_state.phase == "WRITING":
                             send_json(conn, {"type": EVT_NEW_SEGMENT, "segment_id": game_state.current_segment_id, "timeout": TIME_PROPOSAL})
                     else:
+                        # Spettatore
                         send_json(conn, {"type": EVT_GAME_STARTED, "narrator": game_state.players.get(game_state.narrator, "???"), "theme": game_state.current_theme, "am_i_narrator": False, "is_spectator": True})
                         send_json(conn, {"type": EVT_STORY_UPDATE, "story": game_state.story})
 
@@ -198,6 +243,7 @@ def handle_client(conn, addr):
                 if game_state.leader != user_id:
                     send_json(conn, {"type": "ERROR", "msg": "Solo leader."})
                     continue
+                
                 success, info = game_state.start_new_story()
                 if success:
                     evt = {"type": EVT_GAME_STARTED, "narrator": info['narrator_name'], "theme": info['theme'], "is_spectator": False}
@@ -206,6 +252,8 @@ def handle_client(conn, addr):
                             evt_personal = evt.copy()
                             evt_personal["am_i_narrator"] = (p_addr == info['narrator_id'])
                             send_json(p_sock, evt_personal)
+                    
+                    # start_new_segment imposta la fase a WRITING
                     seg_id = game_state.start_new_segment()
                     send_to_all({"type": EVT_NEW_SEGMENT, "segment_id": seg_id, "timeout": TIME_PROPOSAL})
                     start_timer(TIME_PROPOSAL, on_proposal_timeout)
@@ -214,9 +262,15 @@ def handle_client(conn, addr):
             elif msg_type == CMD_SUBMIT:
                 text = msg.get('text')
                 if text == "CRASH_NOW": os._exit(1)
+                
+                # GameState ora controlla la FASE. Se è SELECTING, rifiuta.
                 success, result = game_state.add_proposal(user_id, text)
-                if success: check_round_completion()
-                else: send_json(conn, {"type": "ERROR", "msg": result})
+                
+                if success: 
+                    check_round_completion()
+                else: 
+                    # Manda l'errore al client (es. "Tempo scaduto")
+                    send_json(conn, {"type": "ERROR", "msg": result})
 
             elif msg_type == CMD_SELECT_PROPOSAL:
                 if user_id != game_state.narrator: continue
@@ -226,6 +280,7 @@ def handle_client(conn, addr):
                 if success:
                     send_to_all({"type": EVT_STORY_UPDATE, "story": new_story})
                     send_json(conn, {"type": EVT_ASK_CONTINUE, "timeout": 15})
+                    
                     def auto_continue():
                         with lock:
                             if not game_state.is_running: return
@@ -240,15 +295,15 @@ def handle_client(conn, addr):
                 stop_timer()
                 action = msg.get('action')
                 if action == "CONTINUE":
-                    new_seg_id = game_state.start_new_segment()
+                    new_seg_id = game_state.start_new_segment() # Imposta WRITING
                     send_to_all({"type": EVT_NEW_SEGMENT, "segment_id": new_seg_id, "timeout": TIME_PROPOSAL})
                     start_timer(TIME_PROPOSAL, on_proposal_timeout)
                 elif action == "STOP":
-                    # SALVATAGGIO UNICO QUI
                     print("[SERVER] Storia conclusa. Salvataggio history...")
                     game_state.save_to_history()
                     game_state.is_running = False 
-                    game_state.save_state() # Pulisce recovery
+                    game_state.phase = "VOTING" # Imposta fase voto
+                    game_state.save_state()
 
                     send_to_all({"type": EVT_GAME_ENDED, "final_story": game_state.story, "timeout": TIME_VOTING})
                     start_timer(TIME_VOTING, on_voting_timeout)
@@ -267,12 +322,14 @@ def handle_client(conn, addr):
             if addr in active_connections: del active_connections[addr]
             if addr in last_active: del last_active[addr]
         
+        # Gestione disconnessione narratore
         if game_state.is_running and user_id == game_state.narrator:
             print("[ALERT] Narratore disconnesso.")
             stop_timer()
             send_to_all({"type": EVT_RETURN_TO_LOBBY, "msg": "Narratore caduto."})
             game_state.abort_game()
         
+        # Passaggio leadership se necessario
         new_leader = game_state.remove_player(user_id)
         if new_leader:
             with lock:

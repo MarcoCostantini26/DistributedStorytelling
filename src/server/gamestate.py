@@ -10,6 +10,12 @@ SAVE_FILE = os.path.join(DATA_DIR, 'recovery.json')
 HISTORY_FILE = os.path.join(DATA_DIR, 'history.json')
 THEMES_FILE = os.path.join(DATA_DIR, 'themes.json')
 
+# Costanti per le fasi di gioco (per evitare typo)
+PHASE_LOBBY = "LOBBY"
+PHASE_WRITING = "WRITING"
+PHASE_SELECTING = "SELECTING"
+PHASE_VOTING = "VOTING"
+
 class GameState:
     def __init__(self, persistence=True):
         self.persistence = persistence
@@ -25,6 +31,10 @@ class GameState:
         self.is_running = False
         self.current_segment_id = 0
         self.available_themes = []
+        
+        # --- NUOVO: Gestione della Fase ---
+        self.phase = PHASE_LOBBY
+        # ----------------------------------
         
         self._load_themes()
         
@@ -56,7 +66,8 @@ class GameState:
             "current_theme": self.current_theme,
             "active_proposals": self.active_proposals,
             "current_segment_id": self.current_segment_id,
-            "is_running": self.is_running
+            "is_running": self.is_running,
+            "phase": self.phase  # <--- Salviamo anche la fase corrente
         }
         try:
             os.makedirs(DATA_DIR, exist_ok=True)
@@ -79,8 +90,9 @@ class GameState:
             self.active_proposals = data.get("active_proposals", [])
             self.current_segment_id = data.get("current_segment_id", 0)
             self.is_running = data.get("is_running", False)
+            self.phase = data.get("phase", PHASE_LOBBY) # <--- Carichiamo la fase (default LOBBY)
             
-            print(f"[RECOVERY] Partita ripristinata! Narratore atteso: {self.narrator_username}")
+            print(f"[RECOVERY] Partita ripristinata! Fase: {self.phase}, Narratore: {self.narrator_username}")
         except Exception as e:
             print(f"[ERRORE] Recovery fallito: {e}")
 
@@ -134,6 +146,9 @@ class GameState:
         self.story = []
         self.current_segment_id = 0
         
+        # La fase iniziale non è ancora WRITING, ma di transizione/preparazione
+        self.phase = PHASE_LOBBY 
+        
         self.save_state()
         return True, {
             "narrator_id": self.narrator, 
@@ -144,10 +159,22 @@ class GameState:
     def start_new_segment(self):
         self.current_segment_id += 1
         self.active_proposals = []
+        
+        # --- IMPOSTA FASE SCRITTURA ---
+        self.phase = PHASE_WRITING
+        # ------------------------------
+        
         self.save_state()
         return self.current_segment_id
 
     def add_proposal(self, user_id, text):
+        # --- CONTROLLO FONDAMENTALE: FASE ---
+        # Se non siamo in fase di scrittura, rifiuta tutto.
+        if self.phase != PHASE_WRITING:
+            print(f"[BLOCK] Rifiutata proposta di {user_id} (Fase attuale: {self.phase})")
+            return False, "Tempo scaduto! Fase chiusa."
+        # ------------------------------------
+
         current_user_name = self.players.get(user_id)
         
         if current_user_name == self.narrator_username:
@@ -165,17 +192,32 @@ class GameState:
         self.save_state()
         return True, proposal
 
+    def set_phase_selecting(self):
+        """Helper per chiudere la fase di scrittura manualmente."""
+        self.phase = PHASE_SELECTING
+        self.save_state()
+
     def select_proposal(self, proposal_id):
+        # Opzionale: controlla che siamo in fase SELECTING
+        if self.phase != PHASE_SELECTING:
+            # Non bloccante critico, ma buona pratica
+            pass
+
         selected = next((p for p in self.active_proposals if p['id'] == proposal_id), None)
         if selected:
             self.story.append(selected['text'])
             self.active_proposals = []
+            
+            # Reset fase (opzionale, o si aspetta start_new_segment)
+            self.phase = PHASE_LOBBY 
+            
             self.save_state()
             return True, self.story
         return False, None
 
     def abort_game(self):
         self.is_running = False
+        self.phase = PHASE_LOBBY
         self.active_proposals = []
         self.player_votes.clear()
         self.story_usernames = []
@@ -183,6 +225,7 @@ class GameState:
         print("[GAMESTATE] Partita resettata.")
 
     def register_vote(self, user_id, is_yes):
+        # Opzionale: permetti voti solo in fase VOTING
         self.player_votes[user_id] = is_yes
         return len(self.player_votes)
 
