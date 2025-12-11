@@ -3,56 +3,67 @@ import json
 import os
 from datetime import datetime
 
-# Percorsi assoluti per evitare errori nei test o esecuzioni da cartelle diverse
+# ==========================================
+# CONFIGURAZIONE PATH & COSTANTI
+# ==========================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, '..', '..', 'data')
 SAVE_FILE = os.path.join(DATA_DIR, 'recovery.json')
 HISTORY_FILE = os.path.join(DATA_DIR, 'history.json')
 THEMES_FILE = os.path.join(DATA_DIR, 'themes.json')
 
-# Costanti per le fasi di gioco (per evitare typo)
+# Fasi del Gioco (State Machine)
 PHASE_LOBBY = "LOBBY"
-PHASE_WRITING = "WRITING"
-PHASE_SELECTING = "SELECTING"
-PHASE_VOTING = "VOTING"
+PHASE_WRITING = "WRITING"       # Gli utenti scrivono
+PHASE_SELECTING = "SELECTING"   # Il narratore sceglie (utenti bloccati)
+PHASE_VOTING = "VOTING"         # Voto finale
 
 class GameState:
+    """
+    Gestisce la logica centrale, lo stato della partita e la persistenza dei dati.
+    Agisce come 'Single Source of Truth' per il server.
+    """
     def __init__(self, persistence=True):
         self.persistence = persistence
+        
+        # Stato volatile
         self.players = {}           # Map[addr, username]
-        self.story_usernames = []   # Whitelist
-        self.player_votes = {}      
+        self.player_votes = {}      # Voti per riavvio
+        self.active_proposals = []  # Proposte del round corrente
+        
+        # Stato persistente (Gameplay)
         self.leader = None          
         self.narrator = None        
         self.narrator_username = None 
-        self.story = []       
+        self.story = []             # Lista di stringhe (la storia completa)
+        self.story_usernames = []   # Whitelist giocatori attivi
         self.current_theme = "" 
-        self.active_proposals = [] 
         self.is_running = False
         self.current_segment_id = 0
+        self.phase = PHASE_LOBBY    # Stato corrente della FSM
+        
         self.available_themes = []
-        
-        # --- NUOVO: Gestione della Fase ---
-        self.phase = PHASE_LOBBY
-        # ----------------------------------
-        
         self._load_themes()
         
-        # Carica solo se la persistenza è attiva
         if self.persistence:
             self.load_state()
 
     def _load_themes(self):
+        """Carica i temi dal file JSON o usa un default."""
         try:
             with open(THEMES_FILE, 'r', encoding='utf-8') as f:
                 self.available_themes = json.load(f)
         except Exception:
             self.available_themes = ["Tema Default"]
 
+    # ==========================================
+    # PERSISTENZA & RECOVERY
+    # ==========================================
     def save_state(self):
-        """Salva lo stato su file o lo cancella se la partita è finita."""
+        """Salva lo stato corrente su disco per crash recovery."""
         if not self.persistence: return
 
+        # Se la partita è finita, pulisce il file di recovery
         if not self.is_running:
             if os.path.exists(SAVE_FILE):
                 try: os.remove(SAVE_FILE)
@@ -67,7 +78,7 @@ class GameState:
             "active_proposals": self.active_proposals,
             "current_segment_id": self.current_segment_id,
             "is_running": self.is_running,
-            "phase": self.phase  # <--- Salviamo anche la fase corrente
+            "phase": self.phase 
         }
         try:
             os.makedirs(DATA_DIR, exist_ok=True)
@@ -77,6 +88,7 @@ class GameState:
             print(f"[ERRORE] Salvataggio fallito: {e}")
 
     def load_state(self):
+        """Ripristina lo stato precedente in caso di riavvio del server."""
         if not os.path.exists(SAVE_FILE): return
 
         try:
@@ -90,31 +102,38 @@ class GameState:
             self.active_proposals = data.get("active_proposals", [])
             self.current_segment_id = data.get("current_segment_id", 0)
             self.is_running = data.get("is_running", False)
-            self.phase = data.get("phase", PHASE_LOBBY) # <--- Carichiamo la fase (default LOBBY)
+            self.phase = data.get("phase", PHASE_LOBBY)
             
-            print(f"[RECOVERY] Partita ripristinata! Fase: {self.phase}, Narratore: {self.narrator_username}")
+            print(f"[RECOVERY] Ripristinato. Fase: {self.phase}, Narratore: {self.narrator_username}")
         except Exception as e:
             print(f"[ERRORE] Recovery fallito: {e}")
 
+    # ==========================================
+    # GESTIONE GIOCATORI
+    # ==========================================
     def add_player(self, addr, username):
         clean_name = username.strip()
         if not self.players:
-            self.leader = addr
+            self.leader = addr # Il primo che entra è leader
         self.players[addr] = clean_name
         
+        # Riconnessione narratore
         if self.is_running and clean_name == self.narrator_username:
             self.narrator = addr
             print(f"[RECOVERY] Il Narratore {clean_name} è tornato!")
             
-        print(f"Giocatore aggiunto: {clean_name} ({addr}).")
         return clean_name
 
     def remove_player(self, addr):
+        """
+        Rimuove un giocatore. Se era Leader, ne elegge uno nuovo.
+        Ritorna l'indirizzo del nuovo leader (se cambiato).
+        """
         new_leader_addr = None 
         if addr in self.players:
-            username = self.players[addr]
             del self.players[addr]
             
+            # Elezione nuovo leader
             if addr == self.leader:
                 self.leader = list(self.players.keys())[0] if self.players else None
                 new_leader_addr = self.leader
@@ -124,13 +143,14 @@ class GameState:
             
             if addr == self.narrator:
                 self.narrator = None 
-                print(f"[INFO] Narratore {username} disconnesso.")
-            else:
-                print(f"[INFO] {username} si è disconnesso.")
         
         return new_leader_addr
 
+    # ==========================================
+    # LOGICA DI GIOCO (GAME LOOP)
+    # ==========================================
     def start_new_story(self):
+        """Inizializza una nuova partita (Reset variabili, scelta Narratore/Tema)."""
         self.player_votes.clear()
         if len(self.players) < 2: return False, "Servono 2 giocatori."
         
@@ -145,9 +165,7 @@ class GameState:
             
         self.story = []
         self.current_segment_id = 0
-        
-        # La fase iniziale non è ancora WRITING, ma di transizione/preparazione
-        self.phase = PHASE_LOBBY 
+        self.phase = PHASE_LOBBY # Transizione iniziale
         
         self.save_state()
         return True, {
@@ -157,23 +175,21 @@ class GameState:
         }
 
     def start_new_segment(self):
+        """Avvia un nuovo round di scrittura."""
         self.current_segment_id += 1
         self.active_proposals = []
-        
-        # --- IMPOSTA FASE SCRITTURA ---
-        self.phase = PHASE_WRITING
-        # ------------------------------
-        
+        self.phase = PHASE_WRITING # Apre la fase di scrittura
         self.save_state()
         return self.current_segment_id
 
     def add_proposal(self, user_id, text):
-        # --- CONTROLLO FONDAMENTALE: FASE ---
-        # Se non siamo in fase di scrittura, rifiuta tutto.
+        """
+        Registra una proposta da un giocatore.
+        CRITICO: Rifiuta la proposta se la fase non è WRITING (Timer scaduto).
+        """
+        # Phase Check (Sicurezza server-side)
         if self.phase != PHASE_WRITING:
-            print(f"[BLOCK] Rifiutata proposta di {user_id} (Fase attuale: {self.phase})")
             return False, "Tempo scaduto! Fase chiusa."
-        # ------------------------------------
 
         current_user_name = self.players.get(user_id)
         
@@ -192,44 +208,34 @@ class GameState:
         self.save_state()
         return True, proposal
 
-    def set_phase_selecting(self):
-        """Helper per chiudere la fase di scrittura manualmente."""
-        self.phase = PHASE_SELECTING
-        self.save_state()
-
     def select_proposal(self, proposal_id):
-        # Opzionale: controlla che siamo in fase SELECTING
-        if self.phase != PHASE_SELECTING:
-            # Non bloccante critico, ma buona pratica
-            pass
-
+        """Il narratore sceglie la proposta vincente."""
         selected = next((p for p in self.active_proposals if p['id'] == proposal_id), None)
         if selected:
             self.story.append(selected['text'])
             self.active_proposals = []
-            
-            # Reset fase (opzionale, o si aspetta start_new_segment)
-            self.phase = PHASE_LOBBY 
-            
             self.save_state()
             return True, self.story
         return False, None
 
     def abort_game(self):
+        """Reset forzato della partita."""
         self.is_running = False
         self.phase = PHASE_LOBBY
         self.active_proposals = []
         self.player_votes.clear()
         self.story_usernames = []
         self.save_state()
-        print("[GAMESTATE] Partita resettata.")
 
     def register_vote(self, user_id, is_yes):
-        # Opzionale: permetti voti solo in fase VOTING
         self.player_votes[user_id] = is_yes
         return len(self.player_votes)
 
+    # ==========================================
+    # UTILITIES
+    # ==========================================
     def count_active_writers(self):
+        """Conta quanti giocatori attivi (escluso narratore) devono ancora scrivere."""
         count = 0
         for addr, name in self.players.items():
             if name in self.story_usernames and name != self.narrator_username:
@@ -242,6 +248,7 @@ class GameState:
         return False
 
     def save_to_history(self):
+        """Archivia la storia completa in JSON a fine partita."""
         if not self.story: return
 
         story_entry = {
@@ -251,13 +258,13 @@ class GameState:
             "full_text": self.story
         }
 
+        # Carica storico esistente
         history_data = []
         if os.path.exists(HISTORY_FILE):
             try:
                 with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
                     history_data = json.load(f)
-            except Exception:
-                history_data = []
+            except Exception: pass
 
         history_data.append(story_entry)
 
