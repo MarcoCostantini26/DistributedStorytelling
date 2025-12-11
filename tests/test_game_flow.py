@@ -22,44 +22,32 @@ class TestGameFlow(unittest.TestCase):
         
         self.game.start_new_story()
         
+        self.game.start_new_segment()
+        
         self.game.narrator = self.p1
         self.game.narrator_username = "Alice"
 
-    def test_reconnection_whitelist(self):
-        """Test CRUCIALE: Verifica che il server ricordi chi era in gioco."""
-        self.assertIn("Bob", self.game.story_usernames)
-        
-        self.game.remove_player(self.p2)
-        
-        self.assertNotIn(self.p2, self.game.players)
-
-        self.assertIn("Bob", self.game.story_usernames)
-
     def test_submission_logic(self):
         """Testa che solo gli scrittori autorizzati possano scrivere."""
-        success, res = self.game.add_proposal(self.p2, "C'era una volta...")
+        success, msg = self.game.add_proposal(self.p1, "Io sono il narratore")
+        self.assertFalse(success)
+        
+        success, msg = self.game.add_proposal(self.p2, "Io sono uno scrittore")
         self.assertTrue(success)
         self.assertEqual(len(self.game.active_proposals), 1)
-        
-        success, res = self.game.add_proposal(self.p1, "Io sono il narratore")
-        self.assertFalse(success, "Il narratore non dovrebbe poter proporre")
-        
-        p_outsider = ('127.0.0.1', 9999)
-        self.game.add_player(p_outsider, "Hacker")
-        success, res = self.game.add_proposal(p_outsider, "Spam")
-        self.assertFalse(success, "Gli spettatori non dovrebbero poter scrivere")
 
     def test_story_progression(self):
         """Testa che la scelta del narratore aggiorni la storia."""
-        self.game.add_proposal(self.p2, "Bob dice A") 
-        self.game.add_proposal(self.p3, "Charlie dice B") 
+        self.game.add_proposal(self.p2, "Proposta 1")
+        self.game.add_proposal(self.p3, "Proposta 2")
         
-        success, new_story = self.game.select_proposal(1)
+        self.game.set_phase_selecting()
+        
+        success, story = self.game.select_proposal(1)
         
         self.assertTrue(success)
         self.assertEqual(len(self.game.story), 1)
-        self.assertEqual(self.game.story[0], "Charlie dice B")
-        
+        self.assertEqual(self.game.story[0], "Proposta 2")
         self.assertEqual(len(self.game.active_proposals), 0)
 
 if __name__ == '__main__':

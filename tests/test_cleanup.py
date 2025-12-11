@@ -10,7 +10,7 @@ class TestCleanup(unittest.TestCase):
     
     def setUp(self):
         self.game = GameState()
-        self.game.save_state = lambda: None
+        self.game.save_state = lambda: None 
         
         self.narrator = ('N', 0)
         self.writer = ('W', 1)
@@ -20,6 +20,7 @@ class TestCleanup(unittest.TestCase):
         
         self.game.start_new_story()
         
+        self.game.start_new_segment()
         self.game.narrator = self.narrator
         self.game.narrator_username = "Narrator"
 

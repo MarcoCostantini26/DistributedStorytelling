@@ -18,7 +18,9 @@ class TestSpectator(unittest.TestCase):
         self.game.add_player(self.p2, "Bob")
         
         self.game.start_new_story()
-
+        
+        self.game.start_new_segment()
+        
     def test_late_joiner_is_spectator(self):
         """Chi entra dopo lo start è uno spettatore."""
         spectator = ('IP3', 3)

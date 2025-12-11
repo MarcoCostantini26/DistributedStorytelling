@@ -4,16 +4,14 @@ import os
 import json
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
+
 import server.gamestate as gs_module 
 from server.gamestate import GameState
 
 class TestPersistence(unittest.TestCase):
     
-    
     def setUp(self):
-        """Prepariamo l'ambiente di test."""
         self.original_save_file = gs_module.SAVE_FILE
-        
         self.test_file = "test_recovery.json"
         gs_module.SAVE_FILE = self.test_file
         
@@ -23,10 +21,8 @@ class TestPersistence(unittest.TestCase):
         self.game = GameState()
 
     def tearDown(self):
-        """Pulizia finale."""
         if os.path.exists(self.test_file):
             os.remove(self.test_file)
-            
         gs_module.SAVE_FILE = self.original_save_file
 
     def test_save_and_load(self):
@@ -35,7 +31,10 @@ class TestPersistence(unittest.TestCase):
         self.game.add_player(('IP2', 2), "Luigi")
         self.game.start_new_story()
         
+        self.game.start_new_segment()
+        
         self.game.narrator_username = "Mario" 
+        self.game.narrator = ('IP1', 1) 
 
         success, res = self.game.add_proposal(('IP2', 2), "C'era una volta un fungo.")
         self.assertTrue(success)

@@ -3,6 +3,7 @@ import sys
 import os
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
+
 from server.gamestate import GameState
 
 class TestFullSimulation(unittest.TestCase):
@@ -21,6 +22,8 @@ class TestFullSimulation(unittest.TestCase):
         
         self.game.start_new_story()
         
+        self.game.start_new_segment()
+        
         self.game.narrator = self.narrator
         self.game.narrator_username = "Narrator"
 
@@ -32,6 +35,7 @@ class TestFullSimulation(unittest.TestCase):
         
         self.assertEqual(len(self.game.active_proposals), 2)
         
+        self.game.set_phase_selecting() 
         self.game.select_proposal(1)
         self.assertEqual(len(self.game.story), 1)
         self.assertEqual(self.game.story[-1], "C'era una volta.")
@@ -40,7 +44,8 @@ class TestFullSimulation(unittest.TestCase):
         self.game.narrator = self.narrator
         self.game.narrator_username = "Narrator"
 
-        self.game.add_proposal(self.writer1, "Viveva in un castello.")
+        self.game.add_proposal(self.writer1, "Viveva in un castello.") 
+        self.game.set_phase_selecting()
         self.game.select_proposal(0)
         self.assertEqual(len(self.game.story), 2)
         
@@ -49,6 +54,7 @@ class TestFullSimulation(unittest.TestCase):
         self.game.narrator_username = "Narrator"
 
         self.game.add_proposal(self.writer2, "E mangiava pizza.") 
+        self.game.set_phase_selecting()
         self.game.select_proposal(0)
         self.assertEqual(len(self.game.story), 3)
 
@@ -60,10 +66,6 @@ class TestFullSimulation(unittest.TestCase):
             "E mangiava pizza."
         ]
         self.assertEqual(self.game.story, expected_story)
-        
-        print("\n[SIMULAZIONE] Storia generata correttamente:")
-        for line in self.game.story:
-            print(f"> {line}")
 
 if __name__ == '__main__':
     unittest.main()

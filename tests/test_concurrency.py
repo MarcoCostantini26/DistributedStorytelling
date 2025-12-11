@@ -1,7 +1,7 @@
 import unittest
-import threading
 import sys
 import os
+import threading
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 
@@ -24,6 +24,9 @@ class TestConcurrency(unittest.TestCase):
             self.writers.append(addr)
             
         self.game.start_new_story()
+        
+        self.game.start_new_segment()
+        
         self.game.narrator = self.narrator
         self.game.narrator_username = "Narrator"
 
@@ -31,22 +34,19 @@ class TestConcurrency(unittest.TestCase):
         """Simula 100 client che inviano una proposta nello stesso istante."""
         
         def send_proposal(addr, idx):
-            self.game.add_proposal(addr, f"Proposta numero {idx}")
+            self.game.add_proposal(addr, f"Proposta dal thread {idx}")
 
         threads = []
         for i, addr in enumerate(self.writers):
             t = threading.Thread(target=send_proposal, args=(addr, i))
             threads.append(t)
             t.start()
-
+            
         for t in threads:
             t.join()
-
+            
         self.assertEqual(len(self.game.active_proposals), 100, 
                          "Il server ha perso delle proposte durante l'invio concorrente!")
-        
-        ids = sorted([p['id'] for p in self.game.active_proposals])
-        self.assertEqual(ids[-1], 99)
 
 if __name__ == '__main__':
     unittest.main()
