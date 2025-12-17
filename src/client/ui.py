@@ -7,7 +7,6 @@ import sys
 import os
 import time
 
-# Configurazione path per importare moduli comuni
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from common.protocol import *
 
@@ -17,7 +16,6 @@ from common.protocol import *
 HOST = '127.0.0.1'
 PORT = 65432
 
-# Palette Colori (Nord Theme inspired)
 BG_COLOR = "#2E3440"
 TEXT_BG = "#3B4252"
 FG_COLOR = "#D8DEE9"
@@ -37,12 +35,12 @@ FONT_MONO = ("Consolas", 10)
 FONT_TIMER = ("Segoe UI", 11, "bold")
 
 # Stati Locali della UI
-STATE_VIEWING = "VIEWING"             # Solo lettura
-STATE_EDITING = "EDITING"             # Scrittura proposta
-STATE_WAITING = "WAITING"             # In attesa degli altri
-STATE_DECIDING = "DECIDING"           # Narratore: sceglie proposta
-STATE_DECIDING_CONTINUE = "DECIDING_CONTINUE" # Narratore: continua/stop
-STATE_VOTING = "VOTING"               # Votazione riavvio
+STATE_VIEWING = "VIEWING"             
+STATE_EDITING = "EDITING"             
+STATE_WAITING = "WAITING"             
+STATE_DECIDING = "DECIDING"           
+STATE_DECIDING_CONTINUE = "DECIDING_CONTINUE" 
+STATE_VOTING = "VOTING"              
 
 class StoryClientGUI:
     """
@@ -64,7 +62,6 @@ class StoryClientGUI:
         self.game_running = False
         self.phase = STATE_VIEWING
         
-        # Flag di controllo Thread
         self.running = True
         self.reconnecting = False 
         self.intentional_exit = False 
@@ -73,26 +70,21 @@ class StoryClientGUI:
         self.timer_left = 0
         self.timer_job = None
 
-        # --- SETUP UI COMPONENTS ---
         self._setup_ui()
 
-        # Avvio ritardato per caricare la UI prima del popup login
         self.master.after(100, self.initial_connect)
 
     def _setup_ui(self):
         """Inizializza i widget della GUI."""
-        # Header
         self.header_lbl = tk.Label(self.master, text="DISTRIBUTED STORYTELLING", bg=BG_COLOR, fg=SERVER_COLOR, font=("Segoe UI", 14, "bold"))
         self.header_lbl.pack(pady=(15, 5))
 
-        # Area di Testo (Storia e Log)
         self.text_frame = tk.Frame(self.master, bg=BG_COLOR)
         self.text_frame.pack(padx=20, pady=5, fill=tk.BOTH, expand=True)
 
         self.text_area = scrolledtext.ScrolledText(self.text_frame, state='disabled', wrap=tk.WORD, bg=TEXT_BG, fg=FG_COLOR, insertbackground="white", font=FONT_STORY, bd=0, highlightthickness=1, highlightbackground=INPUT_BG)
         self.text_area.pack(fill=tk.BOTH, expand=True)
         
-        # Tag per colorare il testo
         self.text_area.tag_config("server", foreground=SERVER_COLOR, font=FONT_MONO)
         self.text_area.tag_config("error", foreground=ERROR_COLOR, font=FONT_MONO)
         self.text_area.tag_config("narrator", foreground=NARRATOR_COLOR, font=("Georgia", 12, "bold"))
@@ -100,11 +92,9 @@ class StoryClientGUI:
         self.text_area.tag_config("info", foreground="gray", font=FONT_MONO)
         self.text_area.tag_config("highlight", background=NARRATOR_COLOR, foreground=BG_COLOR)
 
-        # Timer
         self.timer_lbl = tk.Label(self.master, text="", bg=BG_COLOR, fg=TIMER_COLOR, font=FONT_TIMER)
         self.timer_lbl.pack(pady=(5, 0))
 
-        # Area Input
         self.input_frame = tk.Frame(self.master, bg=BG_COLOR)
         self.input_frame.pack(padx=20, pady=(5, 20), fill=tk.X)
 
@@ -115,7 +105,6 @@ class StoryClientGUI:
         self.send_btn = tk.Button(self.input_frame, text="INVIA", command=self.send_message_btn, bg=BTN_BG, fg=BTN_FG, font=("Segoe UI", 10, "bold"), activebackground=SERVER_COLOR, bd=0, cursor="hand2")
         self.send_btn.pack(side=tk.RIGHT, ipadx=15, ipady=5)
 
-        # Status Bar
         self.status_lbl = tk.Label(self.master, text="Non Connesso", bg="#252A34", fg="gray", font=("Consolas", 9), anchor=tk.W, padx=10, pady=5)
         self.status_lbl.pack(side=tk.BOTTOM, fill=tk.X)
 
@@ -142,7 +131,6 @@ class StoryClientGUI:
             self.reconnecting = False
             self.intentional_exit = False
             
-            # Thread separati per non bloccare la GUI
             threading.Thread(target=self.listen_thread, daemon=True).start()
             threading.Thread(target=self.heartbeat_loop, daemon=True).start()
             
@@ -173,12 +161,10 @@ class StoryClientGUI:
         while self.reconnecting:
             time.sleep(3)
             try:
-                # Test connessione semplice
                 temp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 temp_sock.settimeout(2)
                 temp_sock.connect((HOST, PORT))
                 temp_sock.close()
-                # Se successo, riconnetti davvero nel main thread
                 self.master.after(0, self.connect_to_server)
                 return
             except: pass 
@@ -189,7 +175,6 @@ class StoryClientGUI:
             try:
                 msg = recv_json(self.sock)
                 if not msg: raise Exception("Disconnesso")
-                # Aggiorna la UI nel thread principale (Tkinter non è thread-safe)
                 self.master.after(0, self.process_incoming_message, msg)
             except:
                 if self.intentional_exit: break
@@ -230,7 +215,6 @@ class StoryClientGUI:
             self.timer_lbl.config(text="Tempo scaduto!")
             self.timer_job = None
             
-            # --- FIX UX: Disabilita input se il tempo scade ---
             if self.phase == STATE_EDITING:
                 self.log("[INFO] Tempo scaduto! Invio bloccato.", "info")
                 self.disable_input()
@@ -259,7 +243,7 @@ class StoryClientGUI:
             self.is_spectator = msg.get('is_spectator', False)
             self.phase = STATE_VIEWING
             self.clear_screen()
-            self.log(f"CAPITOLO 1: {msg.get('theme')}", "narrator")
+            self.log(f"TEMA: {msg.get('theme')}", "narrator")
             
             if self.is_spectator: self.log("[INFO] Spettatore.", "info")
             elif self.am_i_narrator: self.log("[RUOLO] NARRATORE.", "narrator")
@@ -379,7 +363,6 @@ class StoryClientGUI:
                 self.log("Non puoi avviare.", "error")
             return
 
-        # Input di Gioco in base alla Fase
         if self.phase == STATE_EDITING:
             send_json(self.sock, {"type": CMD_SUBMIT, "text": text})
             self.phase = STATE_WAITING
@@ -448,7 +431,6 @@ class StoryClientGUI:
         self.text_area.config(state='disabled')
 
     def disable_input(self):
-        # Eccezione: Leader in Lobby può sempre scrivere /start
         if self.phase == STATE_VIEWING and self.is_leader and not self.game_running: 
             self.enable_input()
             return
