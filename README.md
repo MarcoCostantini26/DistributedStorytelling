@@ -8,11 +8,11 @@ The system uses a **Client-Server** architecture built with Python and TCP Socke
 ### 1. Start the Server
 The server must be started first to handle connections.
 ```bash
-python src/server/main.py
+python src/server/runner.py
 ```
 
 ### 2. Start the clients
 Open a new terminal for each player who wants to join.
 ```bash
-python src/client/main.py
+python src/client/ui.py
 ```
