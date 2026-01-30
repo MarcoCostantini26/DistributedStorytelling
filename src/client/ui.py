@@ -11,10 +11,14 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from common.protocol import *
 
 # ==========================================
-# CONFIGURAZIONE CLIENT
+# CONFIGURAZIONE CLIENT (HA - 4 NODI)
 # ==========================================
-HOST = '127.0.0.1'
-PORT = 65432
+SERVERS = [
+    ('127.0.0.1', 65432), 
+    ('127.0.0.1', 65433), 
+    ('127.0.0.1', 65434), 
+    ('127.0.0.1', 65435)  
+]
 
 BG_COLOR = "#2E3440"
 TEXT_BG = "#3B4252"
@@ -28,13 +32,11 @@ ERROR_COLOR = "#BF616A"
 STORY_COLOR = "#ECEFF4"
 TIMER_COLOR = "#D08770"
 
-# Font
 FONT_UI = ("Segoe UI", 10)
 FONT_STORY = ("Georgia", 12)
 FONT_MONO = ("Consolas", 10)
 FONT_TIMER = ("Segoe UI", 11, "bold")
 
-# Stati Locali della UI
 STATE_VIEWING = "VIEWING"             
 STATE_EDITING = "EDITING"             
 STATE_WAITING = "WAITING"             
@@ -43,17 +45,12 @@ STATE_DECIDING_CONTINUE = "DECIDING_CONTINUE"
 STATE_VOTING = "VOTING"              
 
 class StoryClientGUI:
-    """
-    Gestisce l'interfaccia grafica (Tkinter) e la logica client.
-    Separa il Thread della UI (MainLoop) dai Thread di rete (Listen/Heartbeat).
-    """
     def __init__(self, master):
         self.master = master
         master.title("Distributed Storytelling Client")
         master.geometry("850x700")
         master.configure(bg=BG_COLOR)
 
-        # Stato della connessione e del gioco
         self.sock = None
         self.username = ""
         self.is_leader = False
@@ -66,16 +63,13 @@ class StoryClientGUI:
         self.reconnecting = False 
         self.intentional_exit = False 
         
-        # Gestione Timer UI
         self.timer_left = 0
         self.timer_job = None
 
         self._setup_ui()
-
         self.master.after(100, self.initial_connect)
 
     def _setup_ui(self):
-        """Inizializza i widget della GUI."""
         self.header_lbl = tk.Label(self.master, text="DISTRIBUTED STORYTELLING", bg=BG_COLOR, fg=SERVER_COLOR, font=("Segoe UI", 14, "bold"))
         self.header_lbl.pack(pady=(15, 5))
 
@@ -108,9 +102,6 @@ class StoryClientGUI:
         self.status_lbl = tk.Label(self.master, text="Non Connesso", bg="#252A34", fg="gray", font=("Consolas", 9), anchor=tk.W, padx=10, pady=5)
         self.status_lbl.pack(side=tk.BOTTOM, fill=tk.X)
 
-    # ==========================================
-    # GESTIONE CONNESSIONE
-    # ==========================================
     def initial_connect(self):
         self.username = simpledialog.askstring("Login", "Inserisci Username:", parent=self.master)
         if not self.username:
@@ -119,58 +110,56 @@ class StoryClientGUI:
         self.connect_to_server()
 
     def connect_to_server(self):
-        """Stabilisce la connessione TCP e avvia i thread di background."""
-        try:
-            if self.sock: self.sock.close()
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.settimeout(5)
-            self.sock.connect((HOST, PORT))
-            self.sock.settimeout(None)
-            
+        """Prova a connettersi ai server disponibili nella lista."""
+        connected = False
+        for ip, port in SERVERS:
+            try:
+                if self.sock: self.sock.close()
+                self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.sock.settimeout(2)
+                self.sock.connect((ip, port))
+                self.sock.settimeout(None)
+                self.log(f"[SISTEMA] Connesso a {ip}:{port}", "server")
+                connected = True
+                break
+            except: pass
+        
+        if connected:
             self.running = True
             self.reconnecting = False
             self.intentional_exit = False
-            
             threading.Thread(target=self.listen_thread, daemon=True).start()
             threading.Thread(target=self.heartbeat_loop, daemon=True).start()
-            
             send_json(self.sock, {"type": CMD_JOIN, "username": self.username})
             self.update_status(f"Connesso come: {self.username}")
-            self.log("[SISTEMA] Connessione stabilita.", "server")
             self.enable_input()
-            
-        except Exception as e:
-            if not self.reconnecting:
-                self.handle_connection_loss()
+        else:
+            if not self.reconnecting: self.handle_connection_loss()
 
     def handle_connection_loss(self):
-        """Gestisce la disconnessione e avvia il tentativo di riconnessione."""
         if self.intentional_exit or self.reconnecting: return
-        
         self.reconnecting = True
         self.running = False
-        
-        self.log("\n[!] Connessione persa. Riconnessione tra 3s...", "error")
+        self.log("\n[!] Connessione persa. Riconnessione...", "error")
         self.status_lbl.config(fg=ERROR_COLOR, text="RICONNESSIONE IN CORSO...")
         self.disable_input()
         self.stop_timer()
-        
         threading.Thread(target=self.reconnect_loop, daemon=True).start()
 
     def reconnect_loop(self):
         while self.reconnecting:
-            time.sleep(3)
-            try:
-                temp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                temp_sock.settimeout(2)
-                temp_sock.connect((HOST, PORT))
-                temp_sock.close()
-                self.master.after(0, self.connect_to_server)
-                return
-            except: pass 
+            for ip, port in SERVERS:
+                try:
+                    temp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    temp_sock.settimeout(1)
+                    temp_sock.connect((ip, port))
+                    temp_sock.close()
+                    self.master.after(0, self.connect_to_server)
+                    return
+                except: pass
+            time.sleep(2)
 
     def listen_thread(self):
-        """Loop di ascolto messaggi dal server."""
         while self.running:
             try:
                 msg = recv_json(self.sock)
@@ -182,16 +171,12 @@ class StoryClientGUI:
                 break
 
     def heartbeat_loop(self):
-        """Invia heartbeat periodico per mantenere la connessione."""
         while self.running:
             try:
                 time.sleep(3)
                 send_json(self.sock, {"type": CMD_HEARTBEAT})
             except: break
 
-    # ==========================================
-    # GESTIONE TIMER E UI UTILS
-    # ==========================================
     def start_timer(self, seconds):
         self.stop_timer()
         if seconds and seconds > 0:
@@ -206,7 +191,6 @@ class StoryClientGUI:
         self.timer_lbl.config(text="")
 
     def tick_timer(self):
-        """Aggiorna il timer. Se scade, blocca l'input localmente."""
         if self.timer_left > 0:
             self.timer_lbl.config(text=f"Tempo rimanente: {self.timer_left}s")
             self.timer_left -= 1
@@ -214,23 +198,17 @@ class StoryClientGUI:
         else:
             self.timer_lbl.config(text="Tempo scaduto!")
             self.timer_job = None
-            
             if self.phase == STATE_EDITING:
                 self.log("[INFO] Tempo scaduto! Invio bloccato.", "info")
                 self.disable_input()
                 self.phase = STATE_WAITING
 
-    # ==========================================
-    # LOGICA DI GIOCO (Gestione Messaggi)
-    # ==========================================
     def process_incoming_message(self, msg):
         msg_type = msg.get('type')
         timeout = msg.get('timeout', 0)
-        
         if timeout: self.start_timer(timeout)
         else: self.stop_timer()
 
-        # --- SETUP PARTITA ---
         if msg_type == EVT_WELCOME:
             self.is_leader = msg.get('is_leader')
             self.log(f"Benvenuto, {self.username}.", "server")
@@ -244,15 +222,12 @@ class StoryClientGUI:
             self.phase = STATE_VIEWING
             self.clear_screen()
             self.log(f"TEMA: {msg.get('theme')}", "narrator")
-            
             if self.is_spectator: self.log("[INFO] Spettatore.", "info")
             elif self.am_i_narrator: self.log("[RUOLO] NARRATORE.", "narrator")
             else: self.log("[RUOLO] SCRITTORE.", "info")
-            
             self.update_status()
             self.disable_input()
 
-        # --- FASE DI SCRITTURA ---
         elif msg_type == EVT_NEW_SEGMENT:
             self.log(f"\n--- Segmento {msg.get('segment_id')} ---", "info")
             if self.is_spectator or self.am_i_narrator:
@@ -266,7 +241,6 @@ class StoryClientGUI:
                 self.entry_field.focus()
             self.update_status()
 
-        # --- FASE DI SCELTA (NARRATORE) ---
         elif msg_type == EVT_NARRATOR_DECISION_NEEDED:
             if self.am_i_narrator:
                 self.phase = STATE_DECIDING
@@ -283,7 +257,6 @@ class StoryClientGUI:
             for line in msg.get('story'): self.log(f"{line}", "story")
             self.disable_input()
 
-        # --- DECISIONI & VOTAZIONI ---
         elif msg_type == EVT_ASK_CONTINUE:
             self.phase = STATE_DECIDING_CONTINUE
             self.log("\nVuoi continuare la storia? (C/F)", "highlight")
@@ -304,7 +277,6 @@ class StoryClientGUI:
         elif msg_type == EVT_VOTE_UPDATE:
             self.log(f"[SISTEMA] Voti ricevuti: {msg.get('count')} / {msg.get('needed')}", "info")
 
-        # --- STATI DI SISTEMA / ERRORI ---
         elif msg_type == EVT_RETURN_TO_LOBBY:
             self.game_running = False
             self.phase = STATE_VIEWING
@@ -312,7 +284,6 @@ class StoryClientGUI:
             self.am_i_narrator = False
             self.log("\n--- SEI IN LOBBY ---", "server")
             if msg.get('msg'): self.log(f"ALERT: {msg.get('msg')}", "error")
-            
             if self.is_leader:
                 self.log("Leader: Scrivi '/start'.", "highlight")
                 self.enable_input()
@@ -340,27 +311,20 @@ class StoryClientGUI:
         elif msg_type == "ERROR":
             self.log(f"[ERRORE] {msg.get('msg')}", "error")
 
-    # ==========================================
-    # GESTIONE INPUT UTENTE
-    # ==========================================
     def send_message_btn(self): self.send_message(None)
-    
     def send_message(self, event):
         text = self.entry_field.get().strip()
         if not text: return
         self.entry_field.delete(0, tk.END)
 
-        # Comandi Sistema
         if text.lower() == "/quit": 
             self.intentional_exit = True
             self.master.destroy()
             return
-
         if text.lower() == "/start":
             if self.is_leader and not self.game_running: 
                 send_json(self.sock, {"type": CMD_START_GAME})
-            else: 
-                self.log("Non puoi avviare.", "error")
+            else: self.log("Non puoi avviare.", "error")
             return
 
         if self.phase == STATE_EDITING:
@@ -407,20 +371,14 @@ class StoryClientGUI:
              if not (self.is_leader and not self.game_running):
                  self.log("Non puoi scrivere adesso.", "error")
 
-    # ==========================================
-    # UTILITIES GRAFICHE
-    # ==========================================
     def log(self, text, tag=None):
-        """Scrive nel box testuale principale."""
         self.text_area.config(state='normal')
         self.text_area.insert(tk.END, text + "\n", tag)
         self.text_area.see(tk.END)
         self.text_area.config(state='disabled')
         
     def update_status(self, text=None):
-        if text: 
-            self.status_lbl.config(text=text)
-            return
+        if text: self.status_lbl.config(text=text); return
         role = "Spettatore" if self.is_spectator else "NARRATORE" if self.am_i_narrator else "Scrittore" if self.game_running else "Utente"
         extra = " [LEADER]" if self.is_leader else ""
         self.status_lbl.config(text=f"{self.username} | {role}{extra} | {self.phase}")
@@ -431,9 +389,7 @@ class StoryClientGUI:
         self.text_area.config(state='disabled')
 
     def disable_input(self):
-        if self.phase == STATE_VIEWING and self.is_leader and not self.game_running: 
-            self.enable_input()
-            return
+        if self.phase == STATE_VIEWING and self.is_leader and not self.game_running: self.enable_input(); return
         self.entry_field.config(state='disabled', bg=BG_COLOR)
         self.send_btn.config(state='disabled', bg=BG_COLOR)
 

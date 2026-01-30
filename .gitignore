@@ -1,1 +1,16 @@
+tests/__pycache__/
+*.py[cod]
+*$py.class
 .venv/
+venv/
+env/
+ENV/
+**/data/recovery.json
+recovery.json
+**/data/history.json
+history.json
+*.log
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

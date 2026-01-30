@@ -3,20 +3,18 @@ import time
 import sys
 import os
 
-SERVER_SCRIPT = os.path.join(os.path.dirname(__file__), "main.py")
+SERVER_SCRIPT = os.path.join(os.path.dirname(__file__), "__main__.py")
 
 def run_server():
-    """
-    Watchdog process: monitors the server lifecycle.
-    - Restarts automatically on crash (exit code != 0).
-    - Stops on clean exit (exit code 0).
-    """
-    print("--- [WATCHDOG] Avvio del Server Storytelling ---")
+    server_args = sys.argv[1:]
+    mode_str = " ".join(server_args) if server_args else "MASTER"
+    
+    print(f"--- [WATCHDOG] Avvio del Server Storytelling ({mode_str}) ---")
     
     while True:
         try:
-            # Launch server using the same Python interpreter (virtualenv safe)
-            process = subprocess.Popen([sys.executable, SERVER_SCRIPT])
+            cmd = [sys.executable, SERVER_SCRIPT] + server_args
+            process = subprocess.Popen(cmd)
             process.wait()
             
             exit_code = process.returncode

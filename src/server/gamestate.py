@@ -58,6 +58,35 @@ class GameState:
             self.available_themes = ["Tema di Emergenza"]
 
     # ==========================================
+    # DATI & REPLICAZIONE 
+    # ==========================================
+    def get_state_dict(self):
+        """Restituisce lo stato completo come dizionario (per replica/save)."""
+        return {
+            "story": self.story,
+            "story_usernames": self.story_usernames,
+            "narrator_username": self.narrator_username,
+            "current_theme": self.current_theme,
+            "active_proposals": self.active_proposals,
+            "current_segment_id": self.current_segment_id,
+            "is_running": self.is_running,
+            "phase": self.phase,
+            "player_votes": self.player_votes 
+        }
+
+    def apply_state_dict(self, data):
+        """Applica uno stato ricevuto (es. dallo Slave)."""
+        self.story = data.get("story", [])
+        self.story_usernames = data.get("story_usernames", [])
+        self.narrator_username = data.get("narrator_username")
+        self.current_theme = data.get("current_theme", "")
+        self.active_proposals = data.get("active_proposals", [])
+        self.current_segment_id = data.get("current_segment_id", 0)
+        self.is_running = data.get("is_running", False)
+        self.phase = data.get("phase", PHASE_LOBBY)
+        self.player_votes = data.get("player_votes", {})
+
+    # ==========================================
     # PERSISTENZA & RECOVERY
     # ==========================================
     def save_state(self):
@@ -70,16 +99,7 @@ class GameState:
                 except: pass
             return
 
-        data = {
-            "story": self.story,
-            "story_usernames": self.story_usernames,
-            "narrator_username": self.narrator_username,
-            "current_theme": self.current_theme,
-            "active_proposals": self.active_proposals,
-            "current_segment_id": self.current_segment_id,
-            "is_running": self.is_running,
-            "phase": self.phase 
-        }
+        data = self.get_state_dict()
         try:
             os.makedirs(DATA_DIR, exist_ok=True)
             with open(SAVE_FILE, 'w', encoding='utf-8') as f:
@@ -95,15 +115,7 @@ class GameState:
             with open(SAVE_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
-            self.story = data.get("story", [])
-            self.story_usernames = data.get("story_usernames", [])
-            self.narrator_username = data.get("narrator_username")
-            self.current_theme = data.get("current_theme", "")
-            self.active_proposals = data.get("active_proposals", [])
-            self.current_segment_id = data.get("current_segment_id", 0)
-            self.is_running = data.get("is_running", False)
-            self.phase = data.get("phase", PHASE_LOBBY)
-            
+            self.apply_state_dict(data)
             print(f"[RECOVERY] Ripristinato. Fase: {self.phase}, Narratore: {self.narrator_username}")
         except Exception as e:
             print(f"[ERRORE] Recovery fallito: {e}")
@@ -127,10 +139,6 @@ class GameState:
         return clean_name
 
     def remove_player(self, addr):
-        """
-        Rimuove un giocatore. Se era Leader, ne elegge uno nuovo.
-        Ritorna l'indirizzo del nuovo leader (se cambiato).
-        """
         new_leader_addr = None 
         if addr in self.players:
             if self.persistence: print(f"[INFO] Rimozione giocatore: {self.players[addr]}")
@@ -152,7 +160,6 @@ class GameState:
     # LOGICA DI GIOCO (GAME LOOP)
     # ==========================================
     def start_new_story(self):
-        """Inizializza una nuova partita (Reset variabili, scelta Narratore/Tema)."""
         self.player_votes.clear()
         if len(self.players) < 2: return False, "Servono 2 giocatori."
         
@@ -177,7 +184,6 @@ class GameState:
         }
 
     def start_new_segment(self):
-        """Avvia un nuovo round di scrittura."""
         self.current_segment_id += 1
         self.active_proposals = []
         self.phase = PHASE_WRITING 
@@ -185,10 +191,6 @@ class GameState:
         return self.current_segment_id
 
     def add_proposal(self, user_id, text):
-        """
-        Registra una proposta da un giocatore.
-        CRITICO: Rifiuta la proposta se la fase non è WRITING (Timer scaduto).
-        """
         if self.phase != PHASE_WRITING:
             return False, "Tempo scaduto! Fase chiusa."
 
@@ -210,12 +212,10 @@ class GameState:
         return True, proposal
 
     def set_phase_selecting(self):
-        """Helper per chiudere la fase di scrittura manualmente (usato dai test e dai timeout)."""
         self.phase = PHASE_SELECTING
         self.save_state()
 
     def select_proposal(self, proposal_id):
-        """Il narratore sceglie la proposta vincente."""
         selected = next((p for p in self.active_proposals if p['id'] == proposal_id), None)
         if selected:
             self.story.append(selected['text'])
@@ -226,7 +226,6 @@ class GameState:
         return False, None
 
     def abort_game(self):
-        """Reset forzato della partita."""
         self.is_running = False
         self.phase = PHASE_LOBBY
         self.active_proposals = []
@@ -238,11 +237,7 @@ class GameState:
         self.player_votes[user_id] = is_yes
         return len(self.player_votes)
 
-    # ==========================================
-    # UTILITIES
-    # ==========================================
     def count_active_writers(self):
-        """Conta quanti giocatori attivi (escluso narratore) devono ancora scrivere."""
         count = 0
         for addr, name in self.players.items():
             if name in self.story_usernames and name != self.narrator_username:
@@ -255,7 +250,6 @@ class GameState:
         return False
 
     def save_to_history(self):
-        """Archivia la storia completa in JSON a fine partita."""
         if not self.story: return
 
         story_entry = {
