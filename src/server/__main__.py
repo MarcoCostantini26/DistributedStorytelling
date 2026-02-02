@@ -10,26 +10,22 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from common.protocol import *
 from gamestate import GameState
 
-# --- CONFIGURAZIONE ---
 HOST = '127.0.0.1'
 GAME_PORT_MASTER = 65432
 REPLICATION_PORT = 7000  
 REPLICATION_HOST = '127.0.0.1'
 
-# Configurazioni Gioco
 TIME_PROPOSAL = 60
 TIME_SELECTION = 30
 TIME_VOTING = 30
 HEARTBEAT_TIMEOUT = 8
 
-# Globals
 game_state = GameState()
 active_connections = {} 
 last_active = {} 
 lock = threading.RLock()
 game_timer = None 
 
-# Stato del Nodo
 AM_I_MASTER = False
 SLAVE_SOCKETS = [] 
 
@@ -77,7 +73,6 @@ def attempt_promotion():
     """Tenta di acquisire la porta 7000 in modo ESCLUSIVO."""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # NIENTE SO_REUSEADDR: Vogliamo che fallisca se la porta è occupata!
         s.bind((REPLICATION_HOST, REPLICATION_PORT))
         return s
     except OSError:
@@ -88,13 +83,11 @@ def run_as_slave(my_port):
     global AM_I_MASTER, game_state
     print(f"[ROLE] Inizializzazione nodo su porta {my_port}...")
     
-    # Backoff casuale per evitare conflitti se lanciati insieme
     time.sleep(random.random() * 1.5)
 
     while not AM_I_MASTER:
         connected = False
         try:
-            # 1. Cerca un Master esistente
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(2)
             s.connect((REPLICATION_HOST, REPLICATION_PORT))
@@ -123,7 +116,6 @@ def run_as_slave(my_port):
         except (ConnectionRefusedError, OSError, Exception):
             if connected: print("[SLAVE] Master perso/caduto.")
             
-            # 2. Fase di Elezione
             print("[ELECTION] Nessun Master rilevato. Tento la promozione...")
             
             rep_socket = attempt_promotion()
@@ -134,7 +126,6 @@ def run_as_slave(my_port):
                 break
             else:
                 print("[ELECTION] Porta 7000 occupata. Riprovo a connettermi...")
-                # Attesa attiva del vincitore
                 for i in range(10):
                     time.sleep(0.5)
                     try:
@@ -256,7 +247,6 @@ def process_vote_check(force_end=False):
     total_connected = len(game_state.players)
     total_voted = len(game_state.player_votes)
     
-    # Protezione invio broadcast
     try:
         send_to_all({"type": EVT_VOTE_UPDATE, "count": total_voted, "needed": total_connected})
     except: pass
@@ -270,19 +260,15 @@ def process_vote_check(force_end=False):
         
         with lock:
             for user_id in all_users:
-                # Se ha votato NO (False) o non ha votato (caso force_end)
                 if user_id in game_state.player_votes and not game_state.player_votes[user_id]:
-                    # Voto NO -> Goodbye
                     sock = active_connections.get(user_id)
                     if sock: 
                         try:
-                            # FIX 1: Try-except per evitare crash se il client è già uscito
                             send_json(sock, {"type": EVT_GOODBYE, "msg": "Grazie!"})
                         except Exception: 
-                            pass # Client già disconnesso
+                            pass 
                     users_leaving.append(user_id)
                 else:
-                    # Voto SI -> Lobby
                     sock = active_connections.get(user_id)
                     if sock: 
                         try:
@@ -335,7 +321,6 @@ def handle_client(conn, addr):
                 send_json(conn, {"type": EVT_WELCOME, "msg": f"Benvenuto {username}!", "is_leader": is_leader})
 
                 if game_state.is_running:
-                    # RECOVERY LOGIC
                     if username in game_state.story_usernames:
                         narrator_name = game_state.players.get(game_state.narrator, "???")
                         am_i_narrator = (game_state.narrator == user_id)
@@ -419,19 +404,16 @@ def handle_client(conn, addr):
                 if addr in active_connections: del active_connections[addr]
                 if addr in last_active: del last_active[addr]
             
-            # Notifica caduta narratore
             if game_state.is_running and user_id == game_state.narrator:
                 stop_timer()
                 send_to_all({"type": EVT_RETURN_TO_LOBBY, "msg": "Narratore caduto."})
                 game_state.abort_game()
             
-            # Passaggio Leadership
             new_leader = game_state.remove_player(user_id)
             if new_leader:
                 with lock:
                     if new_leader in active_connections:
                         try:
-                            # FIX 2: Protezione contro crash leadership
                             send_json(active_connections[new_leader], {"type": EVT_LEADER_UPDATE, "msg": "Sei il nuovo Leader!"})
                         except Exception: pass
 
